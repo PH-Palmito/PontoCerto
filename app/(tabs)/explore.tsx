@@ -1,110 +1,282 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import React, { useEffect, useState, useRef } from 'react';
+import {
+  View,
+  Text,
+  FlatList,
+  StyleSheet,
+  TouchableOpacity,
+  Modal,
+  TextInput,
+  Button,
+  ScrollView,
+  Animated
+} from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Ionicons } from '@expo/vector-icons';
 
-import { Collapsible } from '@/components/Collapsible';
-import { ExternalLink } from '@/components/ExternalLink';
-import ParallaxScrollView from '@/components/ParallaxScrollView';
-import { ThemedText } from '@/components/ThemedText';
-import { ThemedView } from '@/components/ThemedView';
-import { IconSymbol } from '@/components/ui/IconSymbol';
+type BatidaTipo = 'entrada' | 'saida_almoco' | 'retorno_almoco' | 'saida_final';
 
-export default function TabTwoScreen() {
+type Batida = {
+  id: string;
+  tipo: BatidaTipo;
+  timestamp: string;
+};
+
+type Dia = {
+  data: string;
+  batidas: Batida[];
+};
+
+export default function HistoricoScreen() {
+  const [dias, setDias] = useState<Dia[]>([]);
+  const [mesSelecionado, setMesSelecionado] = useState<string>('');
+  const [mesesDisponiveis, setMesesDisponiveis] = useState<string[]>([]);
+  const [modalVisivel, setModalVisivel] = useState(false);
+  const [diaSelecionado, setDiaSelecionado] = useState<Dia | null>(null);
+
+  // Animação da lista
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    (async () => {
+      const dados = await AsyncStorage.getItem('dias');
+      if (dados) {
+        const parsed: Dia[] = JSON.parse(dados);
+        const ordenados = parsed.sort((a, b) => (a.data < b.data ? 1 : -1));
+        setDias(ordenados);
+
+        const meses = Array.from(
+          new Set(
+            ordenados.map(d => {
+              const date = new Date(d.data);
+              return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+            })
+          )
+        );
+        setMesesDisponiveis(meses);
+
+        const hoje = new Date();
+        const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`;
+        setMesSelecionado(mesAtual);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    // Sempre que o mês muda, anima a lista
+    fadeAnim.setValue(0);
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 400,
+      useNativeDriver: true
+    }).start();
+  }, [mesSelecionado]);
+
+  const formatarMesAno = (mesAno: string) => {
+    const [ano, mes] = mesAno.split('-');
+    const nomesMeses = [
+      'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+    ];
+    return `${nomesMeses[parseInt(mes) - 1]} ${ano}`;
+  };
+
+  const calcularTotalHorasDia = (batidas: Batida[]): number => {
+    const getBatida = (tipo: BatidaTipo) => batidas.find(b => b.tipo === tipo);
+    const e = getBatida('entrada');
+    const sAlmoco = getBatida('saida_almoco');
+    const rAlmoco = getBatida('retorno_almoco');
+    const sFinal = getBatida('saida_final');
+
+    if (!e || !sAlmoco || !rAlmoco || !sFinal) return 0;
+
+    const tEntrada = new Date(e.timestamp).getTime();
+    const tSaidaAlmoco = new Date(sAlmoco.timestamp).getTime();
+    const tRetornoAlmoco = new Date(rAlmoco.timestamp).getTime();
+    const tSaidaFinal = new Date(sFinal.timestamp).getTime();
+
+    if (tSaidaAlmoco < tEntrada || tRetornoAlmoco < tSaidaAlmoco || tSaidaFinal < tRetornoAlmoco) return 0;
+
+    return (tSaidaFinal - tEntrada - (tRetornoAlmoco - tSaidaAlmoco)) / (1000 * 60 * 60);
+  };
+
+  const formatarHoras = (horas: number) => {
+    const negativo = horas < 0;
+    const horasAbs = Math.abs(horas);
+    const h = Math.floor(horasAbs);
+    const m = Math.round((horasAbs - h) * 60);
+    return `${negativo ? '-' : ''}${h}h ${m}min`;
+  };
+
+  const icones: Record<BatidaTipo, { nome: keyof typeof Ionicons.glyphMap; cor: string }> = {
+    entrada: { nome: 'log-in', cor: '#2ecc71' },
+    saida_almoco: { nome: 'fast-food', cor: '#f1c40f' },
+    retorno_almoco: { nome: 'return-up-forward', cor: '#3498db' },
+    saida_final: { nome: 'log-out', cor: '#e74c3c' }
+  };
+
+  const diasDoMes = dias.filter(d => {
+    const date = new Date(d.data);
+    const mesAno = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    return mesAno === mesSelecionado;
+  });
+
+  const totalHorasMes = () => diasDoMes.reduce((acc, dia) => acc + calcularTotalHorasDia(dia.batidas), 0);
+  const diasTrabalhadosMes = () => diasDoMes.filter(dia => calcularTotalHorasDia(dia.batidas) > 0).length;
+
+  const saldoMensal = () => {
+    const totalHoras = totalHorasMes();
+    const cargaHorariaSemanal = 44;
+    const semanasNoMes = diasTrabalhadosMes() / 5; // aproximado
+    return totalHoras - cargaHorariaSemanal * semanasNoMes;
+  };
+
+  const saldoSemanal = () => {
+    const hoje = new Date();
+    const primeiroDiaSemana = new Date(hoje);
+    const diaSemana = hoje.getDay();
+    const segunda = diaSemana === 0 ? -6 : 1 - diaSemana;
+    primeiroDiaSemana.setDate(hoje.getDate() + segunda);
+    primeiroDiaSemana.setHours(0, 0, 0, 0);
+
+    const ultimoDiaSemana = new Date(primeiroDiaSemana);
+    ultimoDiaSemana.setDate(primeiroDiaSemana.getDate() + 6);
+    ultimoDiaSemana.setHours(23, 59, 59, 999);
+
+    const diasSemanaAtual = dias.filter(dia => {
+      const dataDia = new Date(dia.data);
+      return dataDia >= primeiroDiaSemana && dataDia <= ultimoDiaSemana;
+    });
+
+    const totalHorasSemana = diasSemanaAtual.reduce(
+      (acc, dia) => acc + calcularTotalHorasDia(dia.batidas),
+      0
+    );
+
+    const cargaHorariaSemanal = 44;
+    return totalHorasSemana - cargaHorariaSemanal;
+  };
+
+  const abrirEdicao = (dia: Dia) => {
+    setDiaSelecionado(dia);
+    setModalVisivel(true);
+  };
+
+  const salvarEdicao = async () => {
+    if (!diaSelecionado) return;
+    const diasAtualizados = dias.map(d => d.data === diaSelecionado.data ? diaSelecionado : d);
+    setDias(diasAtualizados);
+    await AsyncStorage.setItem('dias', JSON.stringify(diasAtualizados));
+    setModalVisivel(false);
+  };
+
+  const renderDia = ({ item }: { item: Dia }) => (
+    <View style={styles.card}>
+      <Text style={styles.data}>{item.data}</Text>
+      {item.batidas.map(b => (
+        <View key={b.id} style={styles.linhaBatida}>
+          <Ionicons name={icones[b.tipo].nome} size={18} color={icones[b.tipo].cor} style={{ marginRight: 5 }} />
+          <Text>{b.tipo.replace('_', ' ').toUpperCase()} - {b.timestamp.slice(11, 16)}</Text>
+        </View>
+      ))}
+      <Text style={styles.total}>⏱ Total: {formatarHoras(calcularTotalHorasDia(item.batidas))}</Text>
+      <TouchableOpacity style={styles.btnEditar} onPress={() => abrirEdicao(item)}>
+        <Text style={{ color: '#fff', fontWeight: 'bold' }}>Editar</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const trocarMes = (direcao: 'anterior' | 'proximo') => {
+    const indiceAtual = mesesDisponiveis.indexOf(mesSelecionado);
+    const novoIndice = direcao === 'proximo' ? indiceAtual - 1 : indiceAtual + 1;
+    if (novoIndice >= 0 && novoIndice < mesesDisponiveis.length) {
+      setMesSelecionado(mesesDisponiveis[novoIndice]);
+    }
+  };
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#D0D0D0', dark: '#353636' }}
-      headerImage={
-        <IconSymbol
-          size={310}
-          color="#808080"
-          name="chevron.left.forwardslash.chevron.right"
-          style={styles.headerImage}
+    <View style={styles.container}>
+      <Text style={styles.titulo}>Histórico</Text>
+
+      {/* Resumo Mensal/Semanal */}
+      <View style={styles.resumoBox}>
+        <Ionicons name="calendar" size={24} color="#fff" style={{ marginRight: 8 }} />
+        <Text style={styles.resumoTexto}>
+          {formatarMesAno(mesSelecionado)} • {diasTrabalhadosMes()} dias
+          {"\n"}Total mês: {formatarHoras(totalHorasMes())}
+          {"\n"}Saldo mensal: {formatarHoras(saldoMensal())}
+          {"\n"}Saldo semanal: {formatarHoras(saldoSemanal())}
+        </Text>
+      </View>
+
+      {/* Navegação entre meses */}
+      <View style={styles.navegacaoMes}>
+        <TouchableOpacity onPress={() => trocarMes('anterior')}>
+          <Ionicons name="chevron-back" size={28} color="#2927B4" />
+        </TouchableOpacity>
+        <Text style={styles.mesSelecionado}>{formatarMesAno(mesSelecionado)}</Text>
+        <TouchableOpacity onPress={() => trocarMes('proximo')}>
+          <Ionicons name="chevron-forward" size={28} color="#2927B4" />
+        </TouchableOpacity>
+      </View>
+
+      {/* Lista de dias animada */}
+      <Animated.View style={{ opacity: fadeAnim, flex: 1 }}>
+        <FlatList
+          data={diasDoMes}
+          keyExtractor={item => item.data}
+          renderItem={renderDia}
         />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Explore</ThemedText>
-      </ThemedView>
-      <ThemedText>This app includes example code to help you get started.</ThemedText>
-      <Collapsible title="File-based routing">
-        <ThemedText>
-          This app has two screens:{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/explore.tsx</ThemedText>
-        </ThemedText>
-        <ThemedText>
-          The layout file in <ThemedText type="defaultSemiBold">app/(tabs)/_layout.tsx</ThemedText>{' '}
-          sets up the tab navigator.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/router/introduction">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Android, iOS, and web support">
-        <ThemedText>
-          You can open this project on Android, iOS, and the web. To open the web version, press{' '}
-          <ThemedText type="defaultSemiBold">w</ThemedText> in the terminal running this project.
-        </ThemedText>
-      </Collapsible>
-      <Collapsible title="Images">
-        <ThemedText>
-          For static images, you can use the <ThemedText type="defaultSemiBold">@2x</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">@3x</ThemedText> suffixes to provide files for
-          different screen densities
-        </ThemedText>
-        <Image source={require('@/assets/images/react-logo.png')} style={{ alignSelf: 'center' }} />
-        <ExternalLink href="https://reactnative.dev/docs/images">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Custom fonts">
-        <ThemedText>
-          Open <ThemedText type="defaultSemiBold">app/_layout.tsx</ThemedText> to see how to load{' '}
-          <ThemedText style={{ fontFamily: 'SpaceMono' }}>
-            custom fonts such as this one.
-          </ThemedText>
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/versions/latest/sdk/font">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Light and dark mode components">
-        <ThemedText>
-          This template has light and dark mode support. The{' '}
-          <ThemedText type="defaultSemiBold">useColorScheme()</ThemedText> hook lets you inspect
-          what the user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Animations">
-        <ThemedText>
-          This template includes an example of an animated component. The{' '}
-          <ThemedText type="defaultSemiBold">components/HelloWave.tsx</ThemedText> component uses
-          the powerful <ThemedText type="defaultSemiBold">react-native-reanimated</ThemedText>{' '}
-          library to create a waving hand animation.
-        </ThemedText>
-        {Platform.select({
-          ios: (
-            <ThemedText>
-              The <ThemedText type="defaultSemiBold">components/ParallaxScrollView.tsx</ThemedText>{' '}
-              component provides a parallax effect for the header image.
-            </ThemedText>
-          ),
-        })}
-      </Collapsible>
-    </ParallaxScrollView>
+      </Animated.View>
+
+      {/* Modal de edição */}
+      <Modal visible={modalVisivel} animationType="slide" transparent>
+        <View style={styles.modalBackground}>
+          <View style={styles.modalContainer}>
+            <ScrollView>
+              {diaSelecionado?.batidas.map((b, index) => (
+                <View key={b.id} style={{ marginBottom: 15 }}>
+                  <Text>{b.tipo.replace('_', ' ').toUpperCase()}</Text>
+                  <TextInput
+                    value={b.timestamp.slice(11, 16)}
+                    onChangeText={text => {
+                      const horas = text.split(':');
+                      if (horas.length === 2 && diaSelecionado) {
+                        const novaData = new Date(diaSelecionado.data);
+                        novaData.setHours(parseInt(horas[0]), parseInt(horas[1]));
+                        const novasBatidas = [...diaSelecionado.batidas];
+                        novasBatidas[index] = { ...b, timestamp: novaData.toISOString() };
+                        setDiaSelecionado({ ...diaSelecionado, batidas: novasBatidas });
+                      }
+                    }}
+                    keyboardType="numeric"
+                    style={styles.input}
+                  />
+                </View>
+              ))}
+              <Button title="Salvar" onPress={salvarEdicao} />
+              <Button title="Cancelar" onPress={() => setModalVisivel(false)} color="red" />
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  headerImage: {
-    color: '#808080',
-    bottom: -90,
-    left: -35,
-    position: 'absolute',
-  },
-  titleContainer: {
-    flexDirection: 'row',
-    gap: 8,
-  },
+  container: { flex: 1, padding: 20, backgroundColor: '#fff' },
+  titulo: { fontSize: 28, fontWeight: 'bold', marginBottom: 15 },
+  resumoBox:{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#2927B4', padding: 12, borderRadius: 8, marginBottom: 15 },
+  resumoTexto: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  navegacaoMes: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 15 },
+  mesSelecionado: { fontSize: 18, fontWeight: 'bold', color: '#2927B4', marginHorizontal: 10 },
+  card: { backgroundColor:'#f8f9fa', padding: 15, borderRadius: 8, marginBottom: 10, elevation: 2 },
+  data: { fontSize: 18, fontWeight: 'bold', marginBottom: 5 },
+  linhaBatida: { flexDirection: 'row', alignItems: 'center', marginBottom: 3 },
+  total: { marginTop: 8, fontWeight: 'bold', color: '#2c3e50' },
+  modalBackground: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  modalContainer: { width: '90%', backgroundColor: '#fff', borderRadius: 8, padding: 20, maxHeight: '80%' },
+  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 5, padding: 8, marginTop: 5 },
+  btnEditar: { marginTop: 10, backgroundColor: '#2927B4', padding: 8, borderRadius: 5, alignItems: 'center' }
 });
