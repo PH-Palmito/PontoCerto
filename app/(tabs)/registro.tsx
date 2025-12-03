@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
+import { Picker } from '@react-native-picker/picker';
 
 type BatidaTipo = 'entrada' | 'saida_almoco' | 'retorno_almoco' | 'saida_final';
 
@@ -20,11 +21,17 @@ type Batida = {
   id: string;
   tipo: BatidaTipo;
   timestamp: string;
+  funcionarioId: string;
 };
 
 type Dia = {
   data: string;
   batidas: Batida[];
+};
+
+type Funcionario = {
+  id: string;
+  nome: string;
 };
 
 export default function HistoricoScreen() {
@@ -33,15 +40,20 @@ export default function HistoricoScreen() {
   const [mesesDisponiveis, setMesesDisponiveis] = useState<string[]>([]);
   const [modalVisivel, setModalVisivel] = useState(false);
   const [diaSelecionado, setDiaSelecionado] = useState<Dia | null>(null);
+  const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
+  const [funcionarioSelecionado, setFuncionarioSelecionado] = useState<string>('todos');
 
-  // Animação da lista
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     (async () => {
-      const dados = await AsyncStorage.getItem('dias');
-      if (dados) {
-        const parsed: Dia[] = JSON.parse(dados);
+      const dadosDias = await AsyncStorage.getItem('dias');
+      const dadosFuncionarios = await AsyncStorage.getItem('funcionarios');
+
+      if (dadosFuncionarios) setFuncionarios(JSON.parse(dadosFuncionarios));
+
+      if (dadosDias) {
+        const parsed: Dia[] = JSON.parse(dadosDias);
         const ordenados = parsed.sort((a, b) => (a.data < b.data ? 1 : -1));
         setDias(ordenados);
 
@@ -63,14 +75,13 @@ export default function HistoricoScreen() {
   }, []);
 
   useEffect(() => {
-    // Sempre que o mês muda, anima a lista
     fadeAnim.setValue(0);
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 400,
       useNativeDriver: true
     }).start();
-  }, [mesSelecionado]);
+  }, [mesSelecionado, funcionarioSelecionado]);
 
   const formatarMesAno = (mesAno: string) => {
     const [ano, mes] = mesAno.split('-');
@@ -121,41 +132,12 @@ export default function HistoricoScreen() {
     return mesAno === mesSelecionado;
   });
 
-  const totalHorasMes = () => diasDoMes.reduce((acc, dia) => acc + calcularTotalHorasDia(dia.batidas), 0);
-  const diasTrabalhadosMes = () => diasDoMes.filter(dia => calcularTotalHorasDia(dia.batidas) > 0).length;
-
-  const saldoMensal = () => {
-    const totalHoras = totalHorasMes();
-    const cargaHorariaSemanal = 44;
-    const semanasNoMes = diasTrabalhadosMes() / 5; // aproximado
-    return totalHoras - cargaHorariaSemanal * semanasNoMes;
-  };
-
-  const saldoSemanal = () => {
-    const hoje = new Date();
-    const primeiroDiaSemana = new Date(hoje);
-    const diaSemana = hoje.getDay();
-    const segunda = diaSemana === 0 ? -6 : 1 - diaSemana;
-    primeiroDiaSemana.setDate(hoje.getDate() + segunda);
-    primeiroDiaSemana.setHours(0, 0, 0, 0);
-
-    const ultimoDiaSemana = new Date(primeiroDiaSemana);
-    ultimoDiaSemana.setDate(primeiroDiaSemana.getDate() + 6);
-    ultimoDiaSemana.setHours(23, 59, 59, 999);
-
-    const diasSemanaAtual = dias.filter(dia => {
-      const dataDia = new Date(dia.data);
-      return dataDia >= primeiroDiaSemana && dataDia <= ultimoDiaSemana;
-    });
-
-    const totalHorasSemana = diasSemanaAtual.reduce(
-      (acc, dia) => acc + calcularTotalHorasDia(dia.batidas),
-      0
-    );
-
-    const cargaHorariaSemanal = 44;
-    return totalHorasSemana - cargaHorariaSemanal;
-  };
+  const diasFiltrados = diasDoMes.map(dia => ({
+    ...dia,
+    batidas: dia.batidas.filter(b =>
+      funcionarioSelecionado === 'todos' || b.funcionarioId === funcionarioSelecionado
+    )
+  }));
 
   const abrirEdicao = (dia: Dia) => {
     setDiaSelecionado(dia);
@@ -198,18 +180,25 @@ export default function HistoricoScreen() {
     <View style={styles.container}>
       <Text style={styles.titulo}>Histórico</Text>
 
-      {/* Resumo Mensal/Semanal */}
       <View style={styles.resumoBox}>
         <Ionicons name="calendar" size={24} color="#fff" style={{ marginRight: 8 }} />
         <Text style={styles.resumoTexto}>
-          {formatarMesAno(mesSelecionado)} • {diasTrabalhadosMes()} dias
-          {"\n"}Total mês: {formatarHoras(totalHorasMes())}
-          {"\n"}Saldo mensal: {formatarHoras(saldoMensal())}
-          {"\n"}Saldo semanal: {formatarHoras(saldoSemanal())}
+          {formatarMesAno(mesSelecionado)}
         </Text>
       </View>
 
-      {/* Navegação entre meses */}
+      <View style={{ marginBottom: 10 }}>
+        <Picker
+        selectedValue={funcionarioSelecionado}
+        onValueChange={(valor: string) => setFuncionarioSelecionado(valor)}
+>
+          <Picker.Item label="Todos" value="todos" />
+          {funcionarios.map(f => (
+            <Picker.Item key={f.id} label={f.nome} value={f.id} />
+          ))}
+        </Picker>
+      </View>
+
       <View style={styles.navegacaoMes}>
         <TouchableOpacity onPress={() => trocarMes('anterior')}>
           <Ionicons name="chevron-back" size={28} color="#2927B4" />
@@ -220,16 +209,14 @@ export default function HistoricoScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Lista de dias animada */}
       <Animated.View style={{ opacity: fadeAnim, flex: 1 }}>
         <FlatList
-          data={diasDoMes}
+          data={diasFiltrados}
           keyExtractor={item => item.data}
           renderItem={renderDia}
         />
       </Animated.View>
 
-      {/* Modal de edição */}
       <Modal visible={modalVisivel} animationType="slide" transparent>
         <View style={styles.modalBackground}>
           <View style={styles.modalContainer}>
