@@ -1,12 +1,24 @@
 import { useState, useEffect } from 'react';
-import { View, Text, TextInput, Button, FlatList } from 'react-native';
+import { View, Text, TextInput, Button, TouchableOpacity, FlatList } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+type Funcionario = {
+  id: string;
+  nome: string;
+  cargaDiariaHoras: number;      // horas por dia
+  diasSemana: number;            // ex: 6 = trabalha 6 dias por semana
+  permiteExtras: boolean;
+  admissao: string;
+};
 
 export default function Settings() {
   const [nome, setNome] = useState('');
- const [funcionarios, setFuncionarios] = useState<
-  { id: string; nome: string }[]
->([]);
+  const [cargaDiaria, setCargaDiaria] = useState('');
+  const [diasSemana, setDiasSemana] = useState('');
+  const [permiteExtras, setPermiteExtras] = useState(false);
+  const [erro, setErro] = useState('');
+
+  const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
 
   async function carregar() {
     const dados = await AsyncStorage.getItem('funcionarios');
@@ -18,51 +30,135 @@ export default function Settings() {
   }, []);
 
   async function cadastrar() {
-    if (!nome.trim()) return;
+    setErro('');
 
-    const novo = {
+    const nomeTrim = nome.trim();
+    if (!nomeTrim) {
+      setErro('Nome vazio.');
+      return;
+    }
+
+    if (funcionarios.some(f => f.nome.toLowerCase() === nomeTrim.toLowerCase())) {
+      setErro('Nome já existe.');
+      return;
+    }
+
+    const horas = Number(cargaDiaria);
+    if (!horas || horas <= 0) {
+      setErro('Carga diária inválida.');
+      return;
+    }
+
+    const dias = Number(diasSemana);
+    if (!dias || dias < 1 || dias > 7) {
+      setErro('Dias por semana inválido.');
+      return;
+    }
+
+    const novo: Funcionario = {
       id: Date.now().toString(),
-      nome,
+      nome: nomeTrim,
+      cargaDiariaHoras: horas,
+      diasSemana: dias,
+      permiteExtras,
+      admissao: new Date().toISOString().split('T')[0]
     };
 
-    const atual = await AsyncStorage.getItem('funcionarios');
-    const lista = atual ? JSON.parse(atual) : [];
-
-    lista.push(novo);
-
+    const lista = [...funcionarios, novo];
     await AsyncStorage.setItem('funcionarios', JSON.stringify(lista));
 
     setNome('');
+    setCargaDiaria('');
+    setDiasSemana('');
+    setPermiteExtras(false);
+
+    carregar();
+  }
+
+  async function remover(id: string) {
+    const lista = funcionarios.filter(f => f.id !== id);
+    await AsyncStorage.setItem('funcionarios', JSON.stringify(lista));
     carregar();
   }
 
   return (
-    <View style={{ flex: 1, padding: 16, gap: 16 }}>
+    <View style={{ flex: 1, padding: 16, gap: 20 }}>
 
-      <Text>Registrar Funcionário</Text>
+      <Text style={{ fontSize: 18 }}>Cadastro de Funcionário</Text>
+
+      {erro ? <Text style={{ color: 'red' }}>{erro}</Text> : null}
 
       <TextInput
+        placeholder="Nome"
         value={nome}
         onChangeText={setNome}
-        placeholder="Nome"
+        style={{ borderWidth: 1, padding: 8, borderRadius: 6 }}
+      />
+
+      <TextInput
+        placeholder="Carga diária em horas (ex: 8)"
+        keyboardType="numeric"
+        value={cargaDiaria}
+        onChangeText={setCargaDiaria}
+        style={{ borderWidth: 1, padding: 8, borderRadius: 6 }}
+      />
+
+      <TextInput
+        placeholder="Dias trabalhados por semana (ex: 6)"
+        keyboardType="numeric"
+        value={diasSemana}
+        onChangeText={setDiasSemana}
+        style={{ borderWidth: 1, padding: 8, borderRadius: 6 }}
+      />
+
+      <TouchableOpacity
+        onPress={() => setPermiteExtras(!permiteExtras)}
         style={{
-          borderWidth: 1,
-          padding: 8,
+          padding: 10,
+          backgroundColor: permiteExtras ? '#090' : '#777',
           borderRadius: 6
         }}
-      />
+      >
+        <Text style={{ color: '#fff' }}>
+          {permiteExtras ? 'Permite horas extras' : 'Não permite horas extras'}
+        </Text>
+      </TouchableOpacity>
 
       <Button title="Cadastrar" onPress={cadastrar} />
 
-      <View style={{ marginTop: 24 }}>
-        <Text>Funcionários cadastrados</Text>
+      <View style={{ marginTop: 30 }}>
+        <Text style={{ fontSize: 18 }}>Funcionários</Text>
 
         <FlatList
           data={funcionarios}
-          keyExtractor={(item) => item.id}
+          keyExtractor={item => item.id}
           renderItem={({ item }) => (
-            <View style={{ paddingVertical: 8, borderBottomWidth: 1 }}>
-              <Text>{item.nome}</Text>
+            <View
+              style={{
+                paddingVertical: 10,
+                borderBottomWidth: 1,
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}
+            >
+              <View>
+                <Text>{item.nome}</Text>
+                <Text>Carga diária: {item.cargaDiariaHoras}h</Text>
+                <Text>Dias por semana: {item.diasSemana}</Text>
+                <Text>Extras: {item.permiteExtras ? 'Sim' : 'Não'}</Text>
+              </View>
+
+              <TouchableOpacity
+                onPress={() => remover(item.id)}
+                style={{
+                  backgroundColor: '#900',
+                  padding: 10,
+                  borderRadius: 6
+                }}
+              >
+                <Text style={{ color: '#fff' }}>Remover</Text>
+              </TouchableOpacity>
             </View>
           )}
         />

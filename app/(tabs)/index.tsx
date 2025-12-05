@@ -1,12 +1,18 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-  StyleSheet, Text, View, TouchableOpacity, FlatList,
-  Alert, Modal, TextInput, Button
-} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Notifications from 'expo-notifications';
 import { useFocusEffect } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  Alert,
+  Button,
+  FlatList,
+  Modal,
+  StyleSheet, Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from 'react-native';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -315,6 +321,7 @@ const styles = StyleSheet.create({
   funcionarioSelecionado: {
     borderColor: '#2927B4',
     backgroundColor: '#e2e2ff',
+    width: '85%',
   },
   btn: {
     marginTop: 20,
