@@ -22,14 +22,17 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 
+
+
 type BatidaTipo = 'entrada' | 'saida_almoco' | 'retorno_almoco' | 'saida_final';
 
 type Batida = {
   id: string;
   tipo: BatidaTipo;
-  timestamp: string; // ISO
+  timestamp: string;
   funcionarioId: string;
 };
+
 
 type Dia = {
   data: string; // YYYY-MM-DD
@@ -242,6 +245,11 @@ const admissaoDe = (id: string) => {
   const f = funcionarios.find(x => x.id === id);
   return f?.admissao ? new Date(f.admissao) : null;
 };
+const NomeFuncionario = (id: string) => {
+  const f = funcionarios.find(x => x.id === id);
+  return f?.nome ?? id;
+};
+
 
 const antesDaAdmissao = (dataDia: string, id: string) => {
   const adm = admissaoDe(id);
@@ -258,64 +266,97 @@ let faltasCount = 0;
 let folgasCount = 0;
 
 if (funcionarioSelecionado === 'todos') {
+
   const somaCargaDiariaTodos = funcionarios.reduce(
     (acc, f) => acc + (f.cargaDiariaHoras ?? cargaDiariaPadrao),
     0
   );
+
   for (const d of diasComInfo) {
+
     if (isFuture(d.data)) {
       if (d.temBatida) trabalhadasHoras += calcularTotalHorasDia(d.batidas);
       continue;
     }
+
     if (ehDiaUtil(d.data)) {
+
       previstasHoras += somaCargaDiariaTodos;
+
       if (d.temBatida) {
         trabalhadasHoras += calcularTotalHorasDia(d.batidas);
-      } else {
-        const reg = d.registroOriginal;
-        if (reg?.fechado) {
-          folgasCount += funcionarios.length;
-        } else if (reg?.folgas && reg.folgas.length > 0) {
-          for (const f of funcionarios) {
-            if (reg.folgas.includes(f.id)) {
-              folgasCount += 1;
-            } else if (!antesDaAdmissao(d.data, f.id)) {
-              faltasCount += 1;
-            }
-          }
-        } else {
-          for (const f of funcionarios) {
-            if (!antesDaAdmissao(d.data, f.id)) {
-              faltasCount += 1;
-            }
+        continue;
+      }
+
+      const reg = d.registroOriginal;
+
+      if (reg?.fechado) {
+        folgasCount += funcionarios.length;
+        continue;
+      }
+
+      if (reg?.folgas && reg.folgas.length > 0) {
+        for (const f of funcionarios) {
+          if (reg.folgas.includes(f.id)) {
+            folgasCount += 1;
+          } else if (!antesDaAdmissao(d.data, f.id)) {
+            faltasCount += 1;
           }
         }
+        continue;
       }
+
+      // Nenhum registro → possibilidade de falta, mas com filtro de admissão
+      for (const f of funcionarios) {
+        if (antesDaAdmissao(d.data, f.id)) continue;
+        faltasCount += 1;
+      }
+
     } else {
       folgasCount += funcionarios.length;
       if (d.temBatida) trabalhadasHoras += calcularTotalHorasDia(d.batidas);
     }
   }
+
 } else {
+
   const carga = obterCargaDiariaFuncionario(funcionarioSelecionado);
+
   for (const d of diasComInfo) {
+
     if (isFuture(d.data)) {
       if (d.temBatida) trabalhadasHoras += calcularTotalHorasDia(d.batidas);
       continue;
     }
+
     const reg = d.registroOriginal;
-    const folgaAutorizada = reg?.folgas?.includes(funcionarioSelecionado) ?? false;
+const folgaAutorizada =
+  reg?.folgas?.includes(funcionarioSelecionado) ?? false;
+
+
     if (ehDiaUtil(d.data)) {
+
       previstasHoras += carga;
+
       if (d.temBatida) {
         trabalhadasHoras += calcularTotalHorasDia(d.batidas);
-      } else if (reg?.fechado) {
-        // não conta falta
-      } else if (folgaAutorizada) {
+        continue;
+      }
+
+      if (reg?.fechado) {
+        continue;
+      }
+
+      if (folgaAutorizada) {
         folgasCount += 1;
-      } else if (!antesDaAdmissao(d.data, funcionarioSelecionado)) {
+        continue;
+      }
+
+      // Falta → somente se já admitido
+      if (!antesDaAdmissao(d.data, funcionarioSelecionado)) {
         faltasCount += 1;
       }
+
     } else {
       folgasCount += 1;
       if (d.temBatida) trabalhadasHoras += calcularTotalHorasDia(d.batidas);
@@ -324,6 +365,7 @@ if (funcionarioSelecionado === 'todos') {
 }
 
 const saldoHoras = trabalhadasHoras - previstasHoras;
+
 
   // ==============================
   // CONTROLES DE MODAL E EDIÇÃO
@@ -384,30 +426,91 @@ const saldoHoras = trabalhadasHoras - previstasHoras;
     setDiaSelecionado({ ...diaSelecionado, fechado: !diaSelecionado.fechado });
   };
 
-  const editarHoraBatida = (index: number, text: string) => {
+
+// ======= editarHoraBatida (corrigida) =======
+const [horasEditando, setHorasEditando] = useState<Record<string, string>>({});
+
+const editarHoraBatida = (index: number, text: string) => {
+  if (!diaSelecionado) return;
+  if (index < 0 || index >= diaSelecionado.batidas.length) return;
+
+  const partes = text.split(':');
+  if (partes.length !== 2) return;
+
+  const hh = parseInt(partes[0].trim(), 10);
+  const mm = parseInt(partes[1].trim(), 10);
+  if (Number.isNaN(hh) || Number.isNaN(mm)) return;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return;
+
+  const novas = [...diaSelecionado.batidas];
+  const b = novas[index];
+  if (!b) return;
+
+  const [ano, mes, dia] = diaSelecionado.data.split('-').map(Number);
+  const dt = new Date(ano, mes - 1, dia, hh, mm, 0, 0);
+
+  novas[index] = { ...b, timestamp: dt.toISOString() };
+  setDiaSelecionado({ ...diaSelecionado, batidas: novas });
+};
+
+// ======= lógica da próxima batida =======
+const sequenciaTipos: BatidaTipo[] = [
+  'entrada',
+  'saida_almoco',
+  'retorno_almoco',
+  'saida_final'
+];
+
+const obterProximoTipoParaFuncionario = (batidasDoFuncionario: Batida[]): BatidaTipo | null => {
+  const tiposPresentes = new Set(batidasDoFuncionario.map(b => b.tipo));
+  for (const t of sequenciaTipos) {
+    if (!tiposPresentes.has(t)) return t;
+  }
+  return null;
+};
+
+<TouchableOpacity
+  onPress={() => {
     if (!diaSelecionado) return;
-    const partes = text.split(':');
-    if (partes.length !== 2) return;
-    const hh = parseInt(partes[0], 10);
-    const mm = parseInt(partes[1], 10);
-    if (Number.isNaN(hh) || Number.isNaN(mm)) return;
-    const novas = [...diaSelecionado.batidas];
-    const b = novas[index];
-    const dt = new Date(diaSelecionado.data + 'T00:00:00');
-    dt.setHours(hh, mm, 0, 0);
-    novas[index] = { ...b, timestamp: dt.toISOString() };
-    setDiaSelecionado({ ...diaSelecionado, batidas: novas });
-  };
+    if (funcionarioSelecionado === 'todos') return;
 
-  const obterNomeFuncionario = (id?: string) => {
-    if (!id) return '';
-    const f = funcionarios.find(x => x.id === id);
-    return f ? f.nome : id;
-  };
+    const batidasDoFunc = (diaSelecionado.batidas ?? [])
+      .filter(b => b.funcionarioId === funcionarioSelecionado);
 
-  const abrirEdicao = (dia: Dia) => {
-    abrirModalComRegistro(dia);
-  };
+    const proximoTipo = obterProximoTipoParaFuncionario(batidasDoFunc);
+    if (!proximoTipo) return;
+
+    let horaReferencia: Date;
+    if (batidasDoFunc.length > 0) {
+      const ultima = batidasDoFunc
+        .map(b => new Date(b.timestamp))
+        .sort((a, z) => a.getTime() - z.getTime())
+        .slice(-1)[0];
+      horaReferencia = new Date(ultima.getTime() + 60 * 1000);
+    } else {
+      const [ano, mes, dia] = diaSelecionado.data.split('-').map(Number);
+      horaReferencia = new Date(ano, mes - 1, dia, 9, 0, 0, 0);
+    }
+
+    const novaId = String(Date.now());
+    const novaBatida: Batida = {
+      id: novaId,
+      funcionarioId: funcionarioSelecionado,
+      tipo: proximoTipo,
+      timestamp: horaReferencia.toISOString(),
+    };
+
+    setDiaSelecionado({
+      ...diaSelecionado,
+      batidas: [...diaSelecionado.batidas, novaBatida],
+    });
+  }}
+  style={{ backgroundColor: '#2927B4', padding: 10, borderRadius: 6, marginBottom: 12 }}
+>
+  <Text style={{ color: '#fff', textAlign: 'center' }}>Adicionar batida</Text>
+</TouchableOpacity>
+
+
   // ==============================
   // TROCA DE MÊS
   // ==============================
@@ -423,65 +526,119 @@ const saldoHoras = trabalhadasHoras - previstasHoras;
   // RENDERIZAÇÃO DE CADA DIA
   // ==============================
 
-  const renderDia = ({ item }: { item: DiaComInfo }) => {
-    const reg = item.registroOriginal;
-    const futuro = isFuture(item.data);
-    const fechado = reg?.fechado ?? false;
-    const folgasDoRegistro = reg?.folgas ?? [];
+const renderDia = ({ item }: { item: DiaComInfo }) => {
+  const reg = item.registroOriginal;
+  const futuro = isFuture(item.data);
+  const fechado = reg?.fechado ?? false;
+  const folgasDoRegistro = reg?.folgas ?? [];
 
-    // status determination
-    let statusLabel: { text: string; color?: string } | null = null;
-    if (futuro) {
-      if (fechado) statusLabel = { text: 'Fechado (autorizado)', color: '#999' };
-      else if (folgasDoRegistro.length > 0) statusLabel = { text: 'Folga autorizada', color: '#999' };
-      else statusLabel = { text: 'Futuro', color: '#666' };
+const batidasParaCalculo =
+  modalVisivel && diaSelecionado?.data === item.data
+    ? diaSelecionado.batidas
+    : item.batidas;
+
+
+  let statusLabel: { text: string; color?: string } | null = null;
+
+ if (futuro) {
+  if (fechado) {
+    statusLabel = { text: 'Fechado (autorizado)', color: '#999' };
+  } else if (funcionarioSelecionado !== 'todos' &&
+             folgasDoRegistro.includes(funcionarioSelecionado)) {
+    statusLabel = { text: 'Folga autorizada', color: '#999' };
+  } else {
+    statusLabel = { text: 'Futuro', color: '#666' };
+  }
+} else {
+
+  if (item.temBatida) {
+    statusLabel = null;
+  }
+
+  else if (fechado) {
+    statusLabel = { text: 'Estabelecimento fechado', color: '#555' };
+  }
+
+  // ===== FUNCIONÁRIO ESPECÍFICO =====
+  else if (funcionarioSelecionado !== 'todos') {
+
+    const folgaAuto = folgasDoRegistro.includes(funcionarioSelecionado);
+
+    if (folgaAuto) {
+      statusLabel = { text: 'Folga autorizada', color: '#2a9d8f' };
+    } else if (!ehDiaUtil(item.data)) {
+      statusLabel = { text: 'Folga (fim de semana)', color: '#555' };
+    } else if (!antesDaAdmissao(item.data, funcionarioSelecionado)) {
+      statusLabel = { text: 'FALTA', color: 'red' };
     } else {
-      if (item.temBatida) statusLabel = null; // show batidas
-      else if (fechado) statusLabel = { text: 'Estabelecimento fechado', color: '#555' };
-      else if (funcionarioSelecionado === 'todos') {
-        if (folgasDoRegistro.length > 0) statusLabel = { text: `Folga autorizada (${folgasDoRegistro.length})`, color: '#2a9d8f' };
-        else if (ehDiaUtil(item.data)) statusLabel = { text: 'FALTA', color: 'red' };
-        else statusLabel = { text: 'Folga (fim de semana)', color: '#555' };
-      } else {
-        // specific funcionario
-        const folgaAuto = folgasDoRegistro.includes(funcionarioSelecionado);
-        if (folgaAuto) statusLabel = { text: 'Folga autorizada', color: '#2a9d8f' };
-        else if (ehDiaUtil(item.data)) statusLabel = { text: 'FALTA', color: 'red' };
-        else statusLabel = { text: 'Folga (fim de semana)', color: '#555' };
-      }
+      statusLabel = null;
     }
 
-    return (
-      <View style={styles.card}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Text style={styles.data}>{item.data}</Text>
-          {statusLabel ? <Text style={{ color: statusLabel.color, fontWeight: '700' }}>{statusLabel.text}</Text> : null}
-        </View>
+  }
 
-        {item.temBatida ? (
-          <>
-            {item.batidas.map((b) => (
-              <View key={b.id} style={styles.linhaBatida}>
-                <Ionicons name={icones[b.tipo].nome} size={16} color={icones[b.tipo].cor} style={{ marginRight: 6 }} />
-                <Text style={{ flex: 1 }}>{b.tipo.replace('_', ' ').toUpperCase()} — {b.timestamp.slice(11, 16)} — {obterNomeFuncionario(b.funcionarioId)}</Text>
-              </View>
-            ))}
-            <Text style={styles.total}>⏱ Total: {formatarHoras(calcularTotalHorasDia(item.batidas))}</Text>
-          </>
+  // ===== MODO TODOS =====
+  else {
+
+    if (folgasDoRegistro.length > 0)
+      statusLabel = { text: `Folgas autorizadas (${folgasDoRegistro.length})`, color: '#2a9d8f' };
+    else if (ehDiaUtil(item.data))
+      statusLabel = { text: 'Falta (alguns funcionários)', color: 'red' };
+    else
+      statusLabel = { text: 'Folga (fim de semana)', color: '#555' };
+  }
+}
+
+
+  return (
+    <View style={styles.card}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Text style={styles.data}>{item.data}</Text>
+        {statusLabel ? (
+          <Text style={{ color: statusLabel.color, fontWeight: '700' }}>
+            {statusLabel.text}
+          </Text>
         ) : null}
-
-        <TouchableOpacity
-          style={styles.btnEditar}
-          onPress={() => {
-            const registro = dias.find(d => d.data === item.data) || { data: item.data, batidas: [], folgas: [], fechado: false } as Dia;
-            abrirModalComRegistro(registro);
-          }}
-        >
-          <Text style={{ color: '#fff', fontWeight: 'bold' }}>Editar</Text>
-        </TouchableOpacity>
       </View>
-    );
-  };
+
+      {item.temBatida ? (
+        <>
+          {item.batidas.map((b) => (
+            <View key={b.id} style={styles.linhaBatida}>
+              <Ionicons
+                name={icones[b.tipo].nome}
+                size={16}
+                color={icones[b.tipo].cor}
+                style={{ marginRight: 6 }}
+              />
+              <Text style={{ flex: 1 }}>
+                {b.tipo.replace('_', ' ').toUpperCase()} — {b.timestamp.slice(11, 16)} —{' '}
+                {NomeFuncionario(b.funcionarioId)}
+              </Text>
+            </View>
+          ))}
+{funcionarioSelecionado !== 'todos' && (
+  <Text style={styles.total}>
+    ⏱ Total: {formatarHoras(calcularTotalHorasDia(batidasParaCalculo))}
+  </Text>
+)}
+        </>
+      ) : null}
+
+      <TouchableOpacity
+        style={styles.btnEditar}
+        onPress={() => {
+          const registro =
+            dias.find((d) => d.data === item.data) ||
+            ({ data: item.data, batidas: [], folgas: [], fechado: false } as Dia);
+          abrirModalComRegistro(registro);
+        }}
+      >
+        <Text style={{ color: '#fff', fontWeight: 'bold' }}>Editar</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
   // ==============================
   // RENDER PRINCIPAL
   // ==============================
@@ -549,43 +706,168 @@ const saldoHoras = trabalhadasHoras - previstasHoras;
               {/* Folgas por funcionário */}
               <Text style={{ fontWeight: '700', marginBottom: 6 }}>Folgas autorizadas</Text>
               {funcionarios.length === 0 ? <Text style={{ marginBottom: 8 }}>Nenhum funcionário cadastrado</Text> : null}
-              {funcionarios.map(f => {
-                const marcado = (diaSelecionado?.folgas ?? []).includes(f.id);
-                return (
-                  <TouchableOpacity
-                    key={f.id}
-                    onPress={() => toggleFolgaFuncionario(f.id)}
-                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 }}
-                  >
-                    <Text>{f.nome} — {(f.cargaDiariaHoras ?? cargaDiariaPadrao)}h</Text>
-                    <View style={[styles.checkbox, marcado ? styles.checkboxOn : styles.checkboxOff]}>
-                      {marcado ? <Ionicons name="checkmark" size={16} color="#fff" /> : null}
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
+
+{(funcionarioSelecionado === "todos"
+  ? funcionarios
+  : funcionarios.filter(f => f.id === funcionarioSelecionado)
+).map(f => {
+  const marcado = (diaSelecionado?.folgas ?? []).includes(f.id);
+  return (
+    <TouchableOpacity
+      key={f.id}
+      onPress={() => toggleFolgaFuncionario(f.id)}
+      style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 }}
+    >
+      <Text>{f.nome} — {(f.cargaDiariaHoras ?? cargaDiariaPadrao)}h</Text>
+      <View style={[styles.checkbox, marcado ? styles.checkboxOn : styles.checkboxOff]}>
+        {marcado ? <Ionicons name="checkmark" size={16} color="#fff" /> : null}
+      </View>
+    </TouchableOpacity>
+  );
+})}
 
               <View style={{ height: 8 }} />
 
-              {/* Batidas existentes (editar hora / remover) */}
-              <Text style={{ fontWeight: '700', marginBottom: 6 }}>Batidas</Text>
-              {diaSelecionado?.batidas.length === 0 && <Text style={{ marginBottom: 10 }}>Nenhuma batida neste dia.</Text>}
-              {diaSelecionado?.batidas.map((b, index) => (
-                <View key={b.id} style={{ marginBottom: 12 }}>
-                  <Text style={{ fontWeight: '700' }}>{b.tipo.replace('_', ' ').toUpperCase()} — {obterNomeFuncionario(b.funcionarioId)}</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <TextInput
-                      value={b.timestamp.slice(11, 16)}
-                      onChangeText={text => editarHoraBatida(index, text)}
-                      keyboardType="numeric"
-                      style={styles.input}
-                    />
-                    <TouchableOpacity onPress={() => removerBatida(b.id)} style={{ backgroundColor: '#900', padding: 8, borderRadius: 6 }}>
-                      <Text style={{ color: '#fff' }}>Remover</Text>
-                    </TouchableOpacity>
-                  </View>
+  {/* Batidas — somente para funcionário específico */}
+<Text style={{ fontWeight: '700', marginBottom: 6 }}>Batidas</Text>
+
+{funcionarioSelecionado === 'todos' ? (
+  <Text style={{ marginBottom: 10 }}>
+    Selecione um funcionário para editar horários.
+  </Text>
+) : (
+  <>
+    {(() => {
+      const batidasDoFunc = (diaSelecionado?.batidas ?? [])
+        .filter(b => b.funcionarioId === funcionarioSelecionado);
+
+      return (
+        <>
+          {batidasDoFunc.length === 0 && (
+            <Text style={{ marginBottom: 10 }}>
+              Nenhuma batida cadastrada. Você pode adicionar manualmente.
+            </Text>
+          )}
+
+          {batidasDoFunc.map(b => {
+            const idxOriginal = diaSelecionado!.batidas.findIndex(x => x.id === b.id);
+
+            return (
+              <View key={b.id} style={{ marginBottom: 12 }}>
+                <Text style={{ fontWeight: '700' }}>
+                  {b.tipo.replace('_', ' ').toUpperCase()}
+                </Text>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+<TextInput
+  value={horasEditando[b.id] ?? b.timestamp.slice(11, 16)}
+  keyboardType="numeric"
+  style={styles.input}
+
+  onChangeText={text => {
+    const limpo = text.replace(/\D/g, '').slice(0, 4);
+    let formatado = limpo;
+    if (limpo.length >= 3) {
+      formatado = `${limpo.slice(0, 2)}:${limpo.slice(2)}`;
+    }
+
+    setHorasEditando(prev => ({
+      ...prev,
+      [b.id]: formatado
+    }));
+  }}
+
+  onBlur={() => {
+    const valor = horasEditando[b.id];
+    if (!valor) return;
+
+    const [hh, mm] = valor.split(':').map(Number);
+    if (hh > 23 || mm > 59) return;
+
+    const [ano, mes, dia] = diaSelecionado!.data.split('-').map(Number);
+    const dt = new Date(ano, mes - 1, dia, hh, mm);
+
+    const novas = [...diaSelecionado!.batidas];
+    novas[idxOriginal] = { ...b, timestamp: dt.toISOString() };
+
+    setDiaSelecionado({
+      ...diaSelecionado!,
+      batidas: novas
+    });
+  }}
+/>
+
+
+                  <TouchableOpacity
+                    onPress={() => removerBatida(b.id)}
+                    style={{ backgroundColor: '#900', padding: 8, borderRadius: 6 }}
+                  >
+                    <Text style={{ color: '#fff' }}>Remover</Text>
+                  </TouchableOpacity>
                 </View>
-              ))}
+              </View>
+            );
+          })}
+        </>
+      );
+    })()}
+
+
+
+
+    {/* Botão para criar nova batida manualmente */}
+
+ // ==============================
+// Botão para criar nova batida manualmente SEM precisar escolher tipo
+// ==============================
+
+<TouchableOpacity
+onPress={() => {
+  if (!diaSelecionado) return;
+
+  const novaId = String(Date.now());
+
+  const batidasDoFunc = diaSelecionado.batidas.filter(
+    b => b.funcionarioId === funcionarioSelecionado
+  );
+
+  const obterProximoTipo = (): BatidaTipo => {
+    const q = batidasDoFunc.length;
+    if (q === 0) return 'entrada';
+    if (q === 1) return 'saida_almoco';
+    if (q === 2) return 'retorno_almoco';
+    if (q === 3) return 'saida_final';
+    return 'saida_final';
+  };
+
+  const novaBatida: Batida = {
+    id: novaId,
+    funcionarioId: funcionarioSelecionado,
+    tipo: obterProximoTipo(),
+    timestamp: new Date(diaSelecionado.data + 'T00:00:00').toISOString()
+  };
+
+  setDiaSelecionado({
+    ...diaSelecionado,
+    batidas: [...diaSelecionado.batidas, novaBatida]
+  });
+}}
+
+
+  style={{
+    backgroundColor: '#2927B4',
+    padding: 10,
+    borderRadius: 6,
+    marginBottom: 12
+  }}
+>
+  <Text style={{ color: '#fff', textAlign: 'center' }}>Adicionar batida</Text>
+</TouchableOpacity>
+
+  </>
+)}
+
+
 
               <View style={{ height: 8 }} />
 
