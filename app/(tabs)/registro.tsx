@@ -1,9 +1,3 @@
-
-// ==============================
-// IMPORTAÇÕES E TIPAGENS
-// ==============================
-
-
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
@@ -17,12 +11,12 @@ import {
   ScrollView,
   Animated,
   Switch,
+  Dimensions,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
-
-
+import { LinearGradient } from 'expo-linear-gradient';
 
 type BatidaTipo = 'entrada' | 'saida_almoco' | 'retorno_almoco' | 'saida_final';
 
@@ -33,29 +27,30 @@ type Batida = {
   funcionarioId: string;
 };
 
-
 type Dia = {
-  data: string; // YYYY-MM-DD
+  data: string;
   batidas: Batida[];
-  folgas?: string[]; // array de funcionarioId com folga autorizada (se vazio ou undefined, sem folgas)
-  fechado?: boolean; // estabelecimento fechado naquele dia (autoridade/admin)
+  folgas?: string[];
+  fechado?: boolean;
 };
 
 type Funcionario = {
   id: string;
   nome: string;
   cargaDiariaHoras?: number;
-   admissao: string // opcional (default 8)
+  admissao: string;
 };
-// ==============================
-// COMPONENTE PRINCIPAL
-// ==============================
+
+const { width } = Dimensions.get('window');
+
+const rotuloBatida: Record<BatidaTipo, string> = {
+  entrada: 'Entrada',
+  saida_almoco: 'Início da Pausa',
+  retorno_almoco: 'Fim da Pausa',
+  saida_final: 'Saída',
+};
+
 export default function HistoricoScreen() {
-
-  // ==============================
-  // ESTADOS
-  // ==============================
-
   const [dias, setDias] = useState<Dia[]>([]);
   const [mesSelecionado, setMesSelecionado] = useState<string>('');
   const [mesesDisponiveis, setMesesDisponiveis] = useState<string[]>([]);
@@ -63,14 +58,16 @@ export default function HistoricoScreen() {
   const [diaSelecionado, setDiaSelecionado] = useState<Dia | null>(null);
   const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
   const [funcionarioSelecionado, setFuncionarioSelecionado] = useState<string>('todos');
+  const [horasEditando, setHorasEditando] = useState<Record<string, string>>({});
+  const [filterStatus, setFilterStatus] = useState<'todos' | 'presente' | 'ausente' | 'folga'>('todos');
+  const [resumoExpandido, setResumoExpandido] = useState(false);
+
+  // Animações para o acordeão
+  const alturaAnim = useRef(new Animated.Value(0)).current;
+  const rotacaoAnim = useRef(new Animated.Value(0)).current;
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const cargaDiariaPadrao = 8;
-
-  // ==============================
-  // CARREGAMENTO INICIAL
-  // ==============================
-
 
   useEffect(() => {
     (async () => {
@@ -93,7 +90,7 @@ export default function HistoricoScreen() {
           const ordenados = parsed.sort((a, b) => (a.data < b.data ? 1 : -1));
           setDias(ordenados);
 
-          const meses = Array.from(
+          const mesesFromData = Array.from(
             new Set(
               ordenados.map(d => {
                 const date = new Date(d.data);
@@ -101,26 +98,35 @@ export default function HistoricoScreen() {
               })
             )
           );
-          meses.sort((a, b) => (a < b ? 1 : -1));
-          setMesesDisponiveis(meses);
 
           const hoje = new Date();
           const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`;
-          setMesSelecionado(meses.includes(mesAtual) ? mesAtual : meses[0] ?? mesAtual);
+          const todosMeses = Array.from(new Set([...mesesFromData, mesAtual]));
+
+          todosMeses.sort((a, b) => {
+            const [anoA, mesA] = a.split('-').map(Number);
+            const [anoB, mesB] = b.split('-').map(Number);
+            if (anoA !== anoB) return anoB - anoA;
+            return mesB - mesA;
+          });
+
+          setMesesDisponiveis(todosMeses);
+          setMesSelecionado(mesAtual);
         } catch {
           setDias([]);
+          const hoje = new Date();
+          const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`;
+          setMesesDisponiveis([mesAtual]);
+          setMesSelecionado(mesAtual);
         }
       } else {
         const hoje = new Date();
         const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`;
+        setMesesDisponiveis([mesAtual]);
         setMesSelecionado(mesAtual);
       }
     })();
   }, []);
-
-    // ==============================
-  // ANIMAÇÃO EM MUDANÇA DE ESTADO
-  // ==============================
 
   useEffect(() => {
     fadeAnim.setValue(0);
@@ -131,9 +137,21 @@ export default function HistoricoScreen() {
     }).start();
   }, [mesSelecionado, funcionarioSelecionado, dias, funcionarios]);
 
-    // ==============================
-  // FUNÇÕES DE FORMATAÇÃO
-  // ==============================
+  // Efeito para animar o acordeão
+  useEffect(() => {
+    Animated.timing(alturaAnim, {
+      toValue: resumoExpandido ? 1 : 0,
+      duration: 300,
+      useNativeDriver: false,
+    }).start();
+
+    Animated.timing(rotacaoAnim, {
+      toValue: resumoExpandido ? 1 : 0,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [resumoExpandido]);
+
   const formatarMesAno = (mesAno: string) => {
     if (!mesAno) return '';
     const [ano, mes] = mesAno.split('-');
@@ -172,23 +190,47 @@ export default function HistoricoScreen() {
     return `${negativo ? '-' : ''}${h}h ${m}min`;
   };
 
-  // ==============================
-  // CONSTANTES E UTILITÁRIOS
-  // ==============================
-
-  const icones: Record<BatidaTipo, { nome: keyof typeof Ionicons.glyphMap; cor: string }> = {
-    entrada: { nome: 'log-in', cor: '#2ecc71' },
-    saida_almoco: { nome: 'fast-food', cor: '#f1c40f' },
-    retorno_almoco: { nome: 'return-up-forward', cor: '#3498db' },
-    saida_final: { nome: 'log-out', cor: '#e74c3c' },
+  const horaDeTimestamp = (ts: string) => {
+    const d = new Date(ts);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   };
 
-  // gera array das datas do mês (YYYY-MM-DD)
+  const formatarData = (dataStr: string) => {
+    const [ano, mes, dia] = dataStr.split('-').map(Number);
+    const data = new Date(ano, mes - 1, dia);
+
+    const opcoes: Intl.DateTimeFormatOptions = {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric'
+    };
+
+    return data.toLocaleDateString('pt-BR', opcoes);
+  };
+
+  const formatarDataSimples = (dataStr: string) => {
+    const [ano, mes, dia] = dataStr.split('-').map(Number);
+    const data = new Date(ano, mes - 1, dia);
+    return data.toLocaleDateString('pt-BR', {
+      day: 'numeric',
+      month: 'short',
+      weekday: 'short'
+    }).replace(',', '');
+  };
+
+  const icones: Record<BatidaTipo, { nome: keyof typeof Ionicons.glyphMap; cor: string }> = {
+    entrada: { nome: 'log-in', cor: '#4CAF50' },
+    saida_almoco: { nome: 'fast-food', cor: '#FF9800' },
+    retorno_almoco: { nome: 'return-up-forward', cor: '#2196F3' },
+    saida_final: { nome: 'log-out', cor: '#F44336' },
+  };
+
   const gerarDiasDoMes = (mesAno: string) => {
     if (!mesAno) return [];
     const [anoS, mesS] = mesAno.split('-');
     const ano = Number(anoS);
-    const mes = Number(mesS); // 1..12
+    const mes = Number(mesS);
     const ultimoDia = new Date(ano, mes, 0).getDate();
     const lista: string[] = [];
     for (let d = 1; d <= ultimoDia; d++) {
@@ -203,176 +245,154 @@ export default function HistoricoScreen() {
   };
 
   const isFuture = (dataISO: string) => {
-    const today = new Date();
-    today.setHours(0,0,0,0);
-    const d = new Date(dataISO);
-    d.setHours(0,0,0,0);
-    return d > today;
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
+    const data = new Date(dataISO);
+    data.setHours(0, 0, 0, 0);
+    return data > hoje;
   };
-// ==============================
-// PRÉ-PROCESSAMENTO POR MÊS
-// ==============================
 
-const todosDiasDoMes = gerarDiasDoMes(mesSelecionado);
-
-type DiaComInfo = {
-  data: string;
-  batidas: Batida[];
-  temBatida: boolean;
-  registroOriginal?: Dia | undefined;
-};
-
-const diasComInfo: DiaComInfo[] = todosDiasDoMes.map(date => {
-  const registro = dias.find(d => d.data === date);
-  const batidasDoRegistro = registro ? registro.batidas : [];
-  const batidasFiltradas = batidasDoRegistro.filter(b =>
-    funcionarioSelecionado === 'todos' ? true : b.funcionarioId === funcionarioSelecionado
-  );
-  return {
-    data: date,
-    batidas: batidasFiltradas,
-    temBatida: batidasFiltradas.length > 0,
-    registroOriginal: registro,
+  const isHoje = (dataISO: string) => {
+    const hoje = new Date();
+    const hojeUTC = Date.UTC(hoje.getFullYear(), hoje.getMonth(), hoje.getDate());
+    const data = new Date(dataISO);
+    const dataUTC = Date.UTC(data.getFullYear(), data.getMonth(), data.getDate());
+    return dataUTC === hojeUTC;
   };
-});
 
-const obterCargaDiariaFuncionario = (id: string) => {
-  const f = funcionarios.find(x => x.id === id);
-  return f?.cargaDiariaHoras ?? cargaDiariaPadrao;
-};
+  const todosDiasDoMes = gerarDiasDoMes(mesSelecionado);
 
-const admissaoDe = (id: string) => {
-  const f = funcionarios.find(x => x.id === id);
-  return f?.admissao ? new Date(f.admissao) : null;
-};
-const NomeFuncionario = (id: string) => {
-  const f = funcionarios.find(x => x.id === id);
-  return f?.nome ?? id;
-};
+  type DiaComInfo = {
+    data: string;
+    batidas: Batida[];
+    temBatida: boolean;
+    registroOriginal?: Dia | undefined;
+  };
 
+  const diasComInfo: DiaComInfo[] = todosDiasDoMes.map(date => {
+    const registro = modalVisivel && diaSelecionado?.data === date
+      ? diaSelecionado
+      : dias.find(d => d.data === date);
 
-const antesDaAdmissao = (dataDia: string, id: string) => {
-  const adm = admissaoDe(id);
-  if (!adm) return false;
-  return new Date(dataDia) < adm;
-};
-// ==============================
-// CÁLCULO DO RESUMO MENSAL
-// ==============================
+    const batidasDoRegistro = registro ? registro.batidas : [];
+    const batidasFiltradas = batidasDoRegistro.filter(b =>
+      funcionarioSelecionado === 'todos' ? true : b.funcionarioId === funcionarioSelecionado
+    );
+    return {
+      data: date,
+      batidas: batidasFiltradas,
+      temBatida: batidasFiltradas.length > 0,
+      registroOriginal: registro,
+    };
+  });
 
-let previstasHoras = 0;
-let trabalhadasHoras = 0;
-let faltasCount = 0;
-let folgasCount = 0;
+  const obterCargaDiariaFuncionario = (id: string) => {
+    const f = funcionarios.find(x => x.id === id);
+    return f?.cargaDiariaHoras ?? cargaDiariaPadrao;
+  };
 
-if (funcionarioSelecionado === 'todos') {
+  const admissaoDe = (id: string) => {
+    const f = funcionarios.find(x => x.id === id);
+    return f?.admissao ? new Date(f.admissao) : null;
+  };
 
-  const somaCargaDiariaTodos = funcionarios.reduce(
-    (acc, f) => acc + (f.cargaDiariaHoras ?? cargaDiariaPadrao),
-    0
-  );
+  const NomeFuncionario = (id: string) => {
+    const f = funcionarios.find(x => x.id === id);
+    return f?.nome ?? id;
+  };
 
-  for (const d of diasComInfo) {
+  const antesDaAdmissao = (dataDia: string, id: string) => {
+    const adm = admissaoDe(id);
+    if (!adm) return false;
+    return new Date(dataDia) < adm;
+  };
 
-    if (isFuture(d.data)) {
-      if (d.temBatida) trabalhadasHoras += calcularTotalHorasDia(d.batidas);
-      continue;
+  let previstasHoras = 0;
+  let trabalhadasHoras = 0;
+  let faltasCount = 0;
+  let folgasCount = 0;
+
+  if (funcionarioSelecionado === 'todos') {
+    const somaCargaDiariaTodos = funcionarios.reduce(
+      (acc, f) => acc + (f.cargaDiariaHoras ?? cargaDiariaPadrao),
+      0
+    );
+
+    for (const d of diasComInfo) {
+      if (isFuture(d.data)) continue;
+
+      if (ehDiaUtil(d.data)) {
+        if (d.temBatida) continue;
+
+        const reg = d.registroOriginal;
+
+        if (reg?.fechado) {
+          folgasCount += funcionarios.length;
+          continue;
+        }
+
+        if (reg?.folgas && reg.folgas.length > 0) {
+          for (const f of funcionarios) {
+            if (reg.folgas.includes(f.id)) {
+              folgasCount += 1;
+            } else if (!antesDaAdmissao(d.data, f.id)) {
+              faltasCount += 1;
+            }
+          }
+          continue;
+        }
+
+        for (const f of funcionarios) {
+          if (antesDaAdmissao(d.data, f.id)) continue;
+          faltasCount += 1;
+        }
+      } else {
+        folgasCount += funcionarios.length;
+      }
     }
 
-    if (ehDiaUtil(d.data)) {
+    previstasHoras = 0;
+    trabalhadasHoras = 0;
+  } else {
+    const carga = obterCargaDiariaFuncionario(funcionarioSelecionado);
 
-      previstasHoras += somaCargaDiariaTodos;
-
-      if (d.temBatida) {
-        trabalhadasHoras += calcularTotalHorasDia(d.batidas);
+    for (const d of diasComInfo) {
+      if (isFuture(d.data)) {
+        if (d.temBatida) trabalhadasHoras += calcularTotalHorasDia(d.batidas);
         continue;
       }
 
       const reg = d.registroOriginal;
+      const folgaAutorizada = reg?.folgas?.includes(funcionarioSelecionado) ?? false;
 
-      if (reg?.fechado) {
-        folgasCount += funcionarios.length;
-        continue;
-      }
+      if (ehDiaUtil(d.data)) {
+        previstasHoras += carga;
 
-      if (reg?.folgas && reg.folgas.length > 0) {
-        for (const f of funcionarios) {
-          if (reg.folgas.includes(f.id)) {
-            folgasCount += 1;
-          } else if (!antesDaAdmissao(d.data, f.id)) {
-            faltasCount += 1;
-          }
+        if (d.temBatida) {
+          trabalhadasHoras += calcularTotalHorasDia(d.batidas);
+          continue;
         }
-        continue;
-      }
 
-      // Nenhum registro → possibilidade de falta, mas com filtro de admissão
-      for (const f of funcionarios) {
-        if (antesDaAdmissao(d.data, f.id)) continue;
-        faltasCount += 1;
-      }
+        if (reg?.fechado) continue;
 
-    } else {
-      folgasCount += funcionarios.length;
-      if (d.temBatida) trabalhadasHoras += calcularTotalHorasDia(d.batidas);
-    }
-  }
+        if (folgaAutorizada) {
+          folgasCount += 1;
+          continue;
+        }
 
-} else {
-
-  const carga = obterCargaDiariaFuncionario(funcionarioSelecionado);
-
-  for (const d of diasComInfo) {
-
-    if (isFuture(d.data)) {
-      if (d.temBatida) trabalhadasHoras += calcularTotalHorasDia(d.batidas);
-      continue;
-    }
-
-    const reg = d.registroOriginal;
-const folgaAutorizada =
-  reg?.folgas?.includes(funcionarioSelecionado) ?? false;
-
-
-    if (ehDiaUtil(d.data)) {
-
-      previstasHoras += carga;
-
-      if (d.temBatida) {
-        trabalhadasHoras += calcularTotalHorasDia(d.batidas);
-        continue;
-      }
-
-      if (reg?.fechado) {
-        continue;
-      }
-
-      if (folgaAutorizada) {
+        if (!antesDaAdmissao(d.data, funcionarioSelecionado)) {
+          faltasCount += 1;
+        }
+      } else {
         folgasCount += 1;
-        continue;
+        if (d.temBatida) trabalhadasHoras += calcularTotalHorasDia(d.batidas);
       }
-
-      // Falta → somente se já admitido
-      if (!antesDaAdmissao(d.data, funcionarioSelecionado)) {
-        faltasCount += 1;
-      }
-
-    } else {
-      folgasCount += 1;
-      if (d.temBatida) trabalhadasHoras += calcularTotalHorasDia(d.batidas);
     }
   }
-}
 
-const saldoHoras = trabalhadasHoras - previstasHoras;
-
-
-  // ==============================
-  // CONTROLES DE MODAL E EDIÇÃO
-  // ==============================
+  const saldoHoras = funcionarioSelecionado === 'todos' ? 0 : trabalhadasHoras - previstasHoras;
 
   const abrirModalComRegistro = (registro: Dia) => {
-    // clone to avoid direct mutation
     const clone: Dia = {
       data: registro.data,
       batidas: registro.batidas ? JSON.parse(JSON.stringify(registro.batidas)) : [],
@@ -383,25 +403,19 @@ const saldoHoras = trabalhadasHoras - previstasHoras;
     setModalVisivel(true);
   };
 
-  const abrirModalVazio = (date: string) => {
-    const novo: Dia = { data: date, batidas: [], folgas: [], fechado: false };
-    setDiaSelecionado(novo);
-    setModalVisivel(true);
-  };
-
   const salvarEdicao = async () => {
     if (!diaSelecionado) return;
-    // se já existe, replace; se não existe e tem conteúdo relevante, adiciona
+
     const existe = dias.some(d => d.data === diaSelecionado.data);
     let diasAtualizados: Dia[];
     if (existe) {
       diasAtualizados = dias.map(d => (d.data === diaSelecionado.data ? diaSelecionado : d));
     } else {
-      // insert preserving order (newest first)
       diasAtualizados = [diaSelecionado, ...dias.filter(d => d.data !== diaSelecionado.data)];
     }
     await AsyncStorage.setItem('dias', JSON.stringify(diasAtualizados));
     setDias(diasAtualizados);
+    setHorasEditando({});
     setModalVisivel(false);
   };
 
@@ -426,454 +440,593 @@ const saldoHoras = trabalhadasHoras - previstasHoras;
     setDiaSelecionado({ ...diaSelecionado, fechado: !diaSelecionado.fechado });
   };
 
-
-// ======= editarHoraBatida (corrigida) =======
-const [horasEditando, setHorasEditando] = useState<Record<string, string>>({});
-
-const editarHoraBatida = (index: number, text: string) => {
-  if (!diaSelecionado) return;
-  if (index < 0 || index >= diaSelecionado.batidas.length) return;
-
-  const partes = text.split(':');
-  if (partes.length !== 2) return;
-
-  const hh = parseInt(partes[0].trim(), 10);
-  const mm = parseInt(partes[1].trim(), 10);
-  if (Number.isNaN(hh) || Number.isNaN(mm)) return;
-  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return;
-
-  const novas = [...diaSelecionado.batidas];
-  const b = novas[index];
-  if (!b) return;
-
-  const [ano, mes, dia] = diaSelecionado.data.split('-').map(Number);
-  const dt = new Date(ano, mes - 1, dia, hh, mm, 0, 0);
-
-  novas[index] = { ...b, timestamp: dt.toISOString() };
-  setDiaSelecionado({ ...diaSelecionado, batidas: novas });
-};
-
-// ======= lógica da próxima batida =======
-const sequenciaTipos: BatidaTipo[] = [
-  'entrada',
-  'saida_almoco',
-  'retorno_almoco',
-  'saida_final'
-];
-
-const obterProximoTipoParaFuncionario = (batidasDoFuncionario: Batida[]): BatidaTipo | null => {
-  const tiposPresentes = new Set(batidasDoFuncionario.map(b => b.tipo));
-  for (const t of sequenciaTipos) {
-    if (!tiposPresentes.has(t)) return t;
-  }
-  return null;
-};
-
-<TouchableOpacity
-  onPress={() => {
-    if (!diaSelecionado) return;
-    if (funcionarioSelecionado === 'todos') return;
-
-    const batidasDoFunc = (diaSelecionado.batidas ?? [])
-      .filter(b => b.funcionarioId === funcionarioSelecionado);
-
-    const proximoTipo = obterProximoTipoParaFuncionario(batidasDoFunc);
-    if (!proximoTipo) return;
-
-    let horaReferencia: Date;
-    if (batidasDoFunc.length > 0) {
-      const ultima = batidasDoFunc
-        .map(b => new Date(b.timestamp))
-        .sort((a, z) => a.getTime() - z.getTime())
-        .slice(-1)[0];
-      horaReferencia = new Date(ultima.getTime() + 60 * 1000);
-    } else {
-      const [ano, mes, dia] = diaSelecionado.data.split('-').map(Number);
-      horaReferencia = new Date(ano, mes - 1, dia, 9, 0, 0, 0);
-    }
-
-    const novaId = String(Date.now());
-    const novaBatida: Batida = {
-      id: novaId,
-      funcionarioId: funcionarioSelecionado,
-      tipo: proximoTipo,
-      timestamp: horaReferencia.toISOString(),
-    };
-
-    setDiaSelecionado({
-      ...diaSelecionado,
-      batidas: [...diaSelecionado.batidas, novaBatida],
-    });
-  }}
-  style={{ backgroundColor: '#2927B4', padding: 10, borderRadius: 6, marginBottom: 12 }}
->
-  <Text style={{ color: '#fff', textAlign: 'center' }}>Adicionar batida</Text>
-</TouchableOpacity>
-
-
-  // ==============================
-  // TROCA DE MÊS
-  // ==============================
   const trocarMes = (direcao: 'anterior' | 'proximo') => {
     const indiceAtual = mesesDisponiveis.indexOf(mesSelecionado);
-    const novoIndice = direcao === 'proximo' ? indiceAtual - 1 : indiceAtual + 1;
-    if (novoIndice >= 0 && novoIndice < mesesDisponiveis.length) {
-      setMesSelecionado(mesesDisponiveis[novoIndice]);
+    if (direcao === 'anterior') {
+      if (indiceAtual < mesesDisponiveis.length - 1) {
+        setMesSelecionado(mesesDisponiveis[indiceAtual + 1]);
+      }
+    } else {
+      if (indiceAtual > 0) {
+        setMesSelecionado(mesesDisponiveis[indiceAtual - 1]);
+      }
     }
   };
 
-  // ==============================
-  // RENDERIZAÇÃO DE CADA DIA
-  // ==============================
+  // Animação de rotação para o ícone do acordeão
+  const rotacao = rotacaoAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '180deg']
+  });
 
-const renderDia = ({ item }: { item: DiaComInfo }) => {
-  const reg = item.registroOriginal;
-  const futuro = isFuture(item.data);
-  const fechado = reg?.fechado ?? false;
-  const folgasDoRegistro = reg?.folgas ?? [];
+  const alturaInterpolada = alturaAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 180] // Ajuste a altura máxima conforme necessário
+  });
 
-const batidasParaCalculo =
-  modalVisivel && diaSelecionado?.data === item.data
-    ? diaSelecionado.batidas
-    : item.batidas;
+  const renderDia = ({ item }: { item: DiaComInfo }) => {
+    const reg = item.registroOriginal;
+    const futuro = isFuture(item.data);
+    const fechado = reg?.fechado ?? false;
+    const folgasDoRegistro = reg?.folgas ?? [];
 
+    let statusLabel: { text: string; color?: string } | null = null;
 
-  let statusLabel: { text: string; color?: string } | null = null;
-
- if (futuro) {
-  if (fechado) {
-    statusLabel = { text: 'Fechado (autorizado)', color: '#999' };
-  } else if (funcionarioSelecionado !== 'todos' &&
-             folgasDoRegistro.includes(funcionarioSelecionado)) {
-    statusLabel = { text: 'Folga autorizada', color: '#999' };
-  } else {
-    statusLabel = { text: 'Futuro', color: '#666' };
-  }
-} else {
-
-  if (item.temBatida) {
-    statusLabel = null;
-  }
-
-  else if (fechado) {
-    statusLabel = { text: 'Estabelecimento fechado', color: '#555' };
-  }
-
-  // ===== FUNCIONÁRIO ESPECÍFICO =====
-  else if (funcionarioSelecionado !== 'todos') {
-
-    const folgaAuto = folgasDoRegistro.includes(funcionarioSelecionado);
-
-    if (folgaAuto) {
-      statusLabel = { text: 'Folga autorizada', color: '#2a9d8f' };
-    } else if (!ehDiaUtil(item.data)) {
-      statusLabel = { text: 'Folga (fim de semana)', color: '#555' };
-    } else if (!antesDaAdmissao(item.data, funcionarioSelecionado)) {
-      statusLabel = { text: 'FALTA', color: 'red' };
+    if (futuro) {
+      if (fechado) {
+        statusLabel = { text: 'Fechado (autorizado)', color: '#999' };
+      } else if (funcionarioSelecionado !== 'todos' &&
+        folgasDoRegistro.includes(funcionarioSelecionado)) {
+        statusLabel = { text: 'Folga autorizada', color: '#999' };
+      } else {
+        statusLabel = { text: 'Futuro', color: '#666' };
+      }
     } else {
-      statusLabel = null;
+      if (item.temBatida) {
+        statusLabel = null;
+      } else if (fechado) {
+        statusLabel = { text: 'Estabelecimento fechado', color: '#555' };
+      } else if (funcionarioSelecionado !== 'todos') {
+        const folgaAuto = folgasDoRegistro.includes(funcionarioSelecionado);
+
+        if (folgaAuto) {
+          statusLabel = { text: 'Folga autorizada', color: '#2a9d8f' };
+        } else if (!ehDiaUtil(item.data)) {
+          statusLabel = { text: 'Folga (fim de semana)', color: '#555' };
+        } else if (!antesDaAdmissao(item.data, funcionarioSelecionado)) {
+          statusLabel = { text: 'FALTA', color: '#e74c3c' };
+        } else {
+          statusLabel = null;
+        }
+      } else {
+        if (folgasDoRegistro.length > 0) {
+          statusLabel = { text: `Folgas autorizadas (${folgasDoRegistro.length})`, color: '#2a9d8f' };
+        } else if (ehDiaUtil(item.data)) {
+          let faltasCount = 0;
+          funcionarios.forEach(func => {
+            if (!antesDaAdmissao(item.data, func.id) && !item.batidas.some(b => b.funcionarioId === func.id)) {
+              faltasCount++;
+            }
+          });
+
+          if (faltasCount > 0) {
+            statusLabel = { text: `Faltas: ${faltasCount} funcionário(s)`, color: '#e74c3c' };
+          } else {
+            statusLabel = { text: 'Todos presentes', color: '#4CAF50' };
+          }
+        } else {
+          statusLabel = { text: 'Folga (fim de semana)', color: '#555' };
+        }
+      }
     }
 
-  }
+    if (funcionarioSelecionado === 'todos') {
+      const funcionariosComBatida = new Set(item.batidas.map(b => b.funcionarioId));
+      const totalFuncionarios = funcionarios.length;
+      const presentes = funcionariosComBatida.size;
+      const folgasAutorizadas = folgasDoRegistro.length;
 
-  // ===== MODO TODOS =====
-  else {
+      let faltas = 0;
+      if (ehDiaUtil(item.data) && !fechado) {
+        funcionarios.forEach(func => {
+          if (antesDaAdmissao(item.data, func.id)) return;
+          if (folgasDoRegistro.includes(func.id)) return;
+          if (!funcionariosComBatida.has(func.id)) {
+            faltas++;
+          }
+        });
+      }
 
-    if (folgasDoRegistro.length > 0)
-      statusLabel = { text: `Folgas autorizadas (${folgasDoRegistro.length})`, color: '#2a9d8f' };
-    else if (ehDiaUtil(item.data))
-      statusLabel = { text: 'Falta (alguns funcionários)', color: 'red' };
-    else
-      statusLabel = { text: 'Folga (fim de semana)', color: '#555' };
-  }
-}
+      return (
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.data}>{formatarDataSimples(item.data)}</Text>
+            {statusLabel && (
+              <View style={[styles.statusBadge, { backgroundColor: `${statusLabel.color}15` }]}>
+                <Text style={[styles.statusText, { color: statusLabel.color }]}>{statusLabel.text}</Text>
+              </View>
+            )}
+          </View>
 
-
-  return (
-    <View style={styles.card}>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Text style={styles.data}>{item.data}</Text>
-        {statusLabel ? (
-          <Text style={{ color: statusLabel.color, fontWeight: '700' }}>
-            {statusLabel.text}
-          </Text>
-        ) : null}
-      </View>
-
-      {item.temBatida ? (
-        <>
-          {item.batidas.map((b) => (
-            <View key={b.id} style={styles.linhaBatida}>
-              <Ionicons
-                name={icones[b.tipo].nome}
-                size={16}
-                color={icones[b.tipo].cor}
-                style={{ marginRight: 6 }}
-              />
-              <Text style={{ flex: 1 }}>
-                {b.tipo.replace('_', ' ').toUpperCase()} — {b.timestamp.slice(11, 16)} —{' '}
-                {NomeFuncionario(b.funcionarioId)}
-              </Text>
+          <View style={styles.resumoContainer}>
+            <View style={styles.resumoItem}>
+              <Ionicons name="people-outline" size={16} color="#666" />
+              <Text style={styles.resumoLabel}>Total:</Text>
+              <Text style={styles.resumoValor}>{totalFuncionarios}</Text>
             </View>
-          ))}
-{funcionarioSelecionado !== 'todos' && (
-  <Text style={styles.total}>
-    ⏱ Total: {formatarHoras(calcularTotalHorasDia(batidasParaCalculo))}
-  </Text>
-)}
-        </>
-      ) : null}
 
+            {presentes > 0 && (
+              <View style={styles.resumoItem}>
+                <Ionicons name="checkmark-circle-outline" size={16} color="#4CAF50" />
+                <Text style={[styles.resumoLabel, { color: '#4CAF50' }]}>Presentes:</Text>
+                <Text style={[styles.resumoValor, { color: '#4CAF50' }]}>{presentes}</Text>
+              </View>
+            )}
+
+            {folgasAutorizadas > 0 && (
+              <View style={styles.resumoItem}>
+                <Ionicons name="calendar-outline" size={16} color="#2a9d8f" />
+                <Text style={[styles.resumoLabel, { color: '#2a9d8f' }]}>Folgas:</Text>
+                <Text style={[styles.resumoValor, { color: '#2a9d8f' }]}>{folgasAutorizadas}</Text>
+              </View>
+            )}
+
+            {faltas > 0 && (
+              <View style={styles.resumoItem}>
+                <Ionicons name="close-circle-outline" size={16} color="#e74c3c" />
+                <Text style={[styles.resumoLabel, { color: '#e74c3c' }]}>Faltas:</Text>
+                <Text style={[styles.resumoValor, { color: '#e74c3c' }]}>{faltas}</Text>
+              </View>
+            )}
+          </View>
+
+          <TouchableOpacity
+            style={[styles.btnConfigurar, isFuture(item.data) && styles.btnDesabilitado]}
+            onPress={() => {
+              const registro = dias.find((d) => d.data === item.data) ||
+                ({ data: item.data, batidas: [], folgas: [], fechado: false } as Dia);
+              abrirModalComRegistro(registro);
+            }}
+            disabled={isFuture(item.data)}
+          >
+            <Ionicons name="settings-outline" size={16} color="#fff" />
+            <Text style={styles.btnConfigurarTexto}>Configurar dia</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    const batidasParaRenderizar = item.batidas;
+
+    return (
       <TouchableOpacity
-        style={styles.btnEditar}
+        style={styles.card}
         onPress={() => {
-          const registro =
-            dias.find((d) => d.data === item.data) ||
+          if (isFuture(item.data) && funcionarioSelecionado !== 'todos') {
+            return;
+          }
+          const registro = dias.find((d) => d.data === item.data) ||
             ({ data: item.data, batidas: [], folgas: [], fechado: false } as Dia);
           abrirModalComRegistro(registro);
         }}
+        activeOpacity={0.7}
       >
-        <Text style={{ color: '#fff', fontWeight: 'bold' }}>Editar</Text>
-      </TouchableOpacity>
-    </View>
-  );
-};
+        <View style={styles.cardHeader}>
+          <Text style={styles.data}>{formatarDataSimples(item.data)}</Text>
+          {statusLabel && (
+            <View style={[styles.statusBadge, { backgroundColor: `${statusLabel.color}15` }]}>
+              <Text style={[styles.statusText, { color: statusLabel.color }]}>{statusLabel.text}</Text>
+            </View>
+          )}
+        </View>
 
-  // ==============================
-  // RENDER PRINCIPAL
-  // ==============================
+        {item.temBatida ? (
+          <>
+            {batidasParaRenderizar.map((b) => (
+              <View key={b.id} style={styles.batidaItem}>
+                <View style={[styles.batidaIcon, { backgroundColor: `${icones[b.tipo].cor}15` }]}>
+                  <Ionicons name={icones[b.tipo].nome} size={16} color={icones[b.tipo].cor} />
+                </View>
+                <View style={styles.batidaInfo}>
+                  <Text style={styles.batidaTipo}>{rotuloBatida[b.tipo]}</Text>
+                  <Text style={styles.batidaHora}>{horaDeTimestamp(b.timestamp)}</Text>
+                </View>
+              </View>
+            ))}
+
+            <View style={styles.totalContainer}>
+              <Ionicons name="time-outline" size={16} color="#666" />
+              <Text style={styles.totalText}>
+                Total: {formatarHoras(calcularTotalHorasDia(batidasParaRenderizar))}
+              </Text>
+            </View>
+          </>
+        ) : (
+          <View style={styles.semBatidas}>
+            <Ionicons name="time-outline" size={24} color="#ddd" />
+            <Text style={styles.semBatidasTexto}>Sem registros</Text>
+          </View>
+        )}
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <View style={styles.container}>
-      <Text style={styles.titulo}>Histórico</Text>
+      <LinearGradient
+        colors={['#2927B4', '#12114E']}
+        style={styles.headerGradient}
+      >
+        <Text style={styles.titulo}>Histórico</Text>
+      </LinearGradient>
 
-      <View style={styles.resumoBox}>
-        <Ionicons name="calendar" size={20} color="#fff" style={{ marginRight: 8 }} />
-        <View>
-          <Text style={styles.resumoTexto}>{formatarMesAno(mesSelecionado)}</Text>
-          <Text style={{ color: '#fff', marginTop: 4 }}>
-            Trabalhadas: {formatarHoras(trabalhadasHoras)} — Previstas: {formatarHoras(previstasHoras)} — Saldo: {formatarHoras(saldoHoras)}
-          </Text>
-          <Text style={{ color: '#fff', marginTop: 4 }}>
-            Faltas: {faltasCount} — Folgas (fins de semana/autorizadas): {folgasCount}
-          </Text>
+      <View style={styles.content}>
+        <View style={styles.filtrosContainer}>
+          <View style={styles.seletorContainer}>
+            <Ionicons name="person-outline" size={20} color="#666" style={styles.seletorIcon} />
+            <Picker
+              selectedValue={funcionarioSelecionado}
+              onValueChange={(valor) => setFuncionarioSelecionado(String(valor))}
+              style={styles.picker}
+              dropdownIconColor="#2927B4"
+            >
+              <Picker.Item label="Todos os funcionários" value="todos" />
+              {funcionarios.map(f => (
+                <Picker.Item
+                  key={f.id}
+                  label={`${f.nome} (${(f.cargaDiariaHoras ?? cargaDiariaPadrao)}h/dia)`}
+                  value={f.id}
+                />
+              ))}
+            </Picker>
+          </View>
+
+          <View style={styles.navegacaoMes}>
+            <TouchableOpacity
+              onPress={() => trocarMes('anterior')}
+              disabled={mesesDisponiveis.indexOf(mesSelecionado) === mesesDisponiveis.length - 1}
+              style={styles.navBtn}
+            >
+              <Ionicons
+                name="chevron-back"
+                size={24}
+                color={mesesDisponiveis.indexOf(mesSelecionado) === mesesDisponiveis.length - 1 ? '#cccccc' : '#2927B4'}
+              />
+            </TouchableOpacity>
+
+            <View style={styles.mesContainer}>
+              <Text style={styles.mesSelecionado}>{formatarMesAno(mesSelecionado)}</Text>
+              <Text style={styles.mesInfo}>{diasComInfo.length} dias</Text>
+            </View>
+
+            <TouchableOpacity
+              onPress={() => trocarMes('proximo')}
+              disabled={mesesDisponiveis.indexOf(mesSelecionado) === 0}
+              style={styles.navBtn}
+            >
+              <Ionicons
+                name="chevron-forward"
+                size={24}
+                color={mesesDisponiveis.indexOf(mesSelecionado) === 0 ? '#cccccc' : '#2927B4'}
+              />
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
 
-      <View style={{ marginBottom: 10 }}>
-        <Picker
-          selectedValue={funcionarioSelecionado}
-          onValueChange={(valor) => setFuncionarioSelecionado(String(valor))}
-        >
-          <Picker.Item label="Todos" value="todos" />
-          {funcionarios.map(f => (
-            <Picker.Item key={f.id} label={`${f.nome} (${(f.cargaDiariaHoras ?? cargaDiariaPadrao)}h)`} value={f.id} />
-          ))}
-        </Picker>
-      </View>
+        {/* Acordeão do Resumo */}
+        <View style={styles.acordeaoContainer}>
+          <TouchableOpacity
+            style={styles.acordeaoHeader}
+            onPress={() => setResumoExpandido(!resumoExpandido)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.acordeaoHeaderContent}>
+              <Ionicons name="stats-chart-outline" size={24} color="#2927B4" />
+              <Text style={styles.acordeaoTitle}>Resumo do Mês</Text>
+            </View>
+            <Animated.View style={{ transform: [{ rotate: rotacao }] }}>
+              <Ionicons name="chevron-down" size={24} color="#2927B4" />
+            </Animated.View>
+          </TouchableOpacity>
 
-      <View style={styles.navegacaoMes}>
-        <TouchableOpacity onPress={() => trocarMes('anterior')}>
-          <Ionicons name="chevron-back" size={26} color="#2927B4" />
-        </TouchableOpacity>
-        <Text style={styles.mesSelecionado}>{formatarMesAno(mesSelecionado)}</Text>
-        <TouchableOpacity onPress={() => trocarMes('proximo')}>
-          <Ionicons name="chevron-forward" size={26} color="#2927B4" />
-        </TouchableOpacity>
-      </View>
+          <Animated.View style={[styles.acordeaoContent, { height: alturaInterpolada }]}>
+            <ScrollView style={styles.acordeaoScrollContent} showsVerticalScrollIndicator={false}>
+              <View style={styles.resumoGrid}>
+                {funcionarioSelecionado === 'todos' ? (
+                  <>
+                    <View style={styles.resumoItemCard}>
+                      <Ionicons name="people-outline" size={20} color="#2927B4" />
+                      <Text style={styles.resumoItemValue}>{funcionarios.length}</Text>
+                      <Text style={styles.resumoItemLabel}>Funcionários</Text>
+                    </View>
 
-      <Animated.View style={{ opacity: fadeAnim, flex: 1 }}>
-        <FlatList
-          data={diasComInfo}
-          keyExtractor={item => item.data}
-          renderItem={renderDia}
-          ListEmptyComponent={<Text style={{ textAlign: 'center', marginTop: 20 }}>Nenhum dia neste mês.</Text>}
-        />
-      </Animated.View>
+                    <View style={styles.resumoItemCard}>
+                      <Ionicons name="close-circle-outline" size={20} color="#e74c3c" />
+                      <Text style={[styles.resumoItemValue, { color: '#e74c3c' }]}>{faltasCount}</Text>
+                      <Text style={styles.resumoItemLabel}>Faltas</Text>
+                    </View>
+
+                    <View style={styles.resumoItemCard}>
+                      <Ionicons name="calendar-outline" size={20} color="#2a9d8f" />
+                      <Text style={[styles.resumoItemValue, { color: '#2a9d8f' }]}>{folgasCount}</Text>
+                      <Text style={styles.resumoItemLabel}>Folgas</Text>
+                    </View>
+
+                    <View style={styles.resumoItemCard}>
+                      <Ionicons name="checkmark-circle-outline" size={20} color="#4CAF50" />
+                      <Text style={[styles.resumoItemValue, { color: '#4CAF50' }]}>
+                        {funcionarios.length - faltasCount}
+                      </Text>
+                      <Text style={styles.resumoItemLabel}>Presentes</Text>
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <View style={styles.resumoItemCard}>
+                      <Ionicons name="time-outline" size={20} color="#27ae60" />
+                      <Text style={[styles.resumoItemValue, { color: '#27ae60' }]}>
+                        {formatarHoras(trabalhadasHoras)}
+                      </Text>
+                      <Text style={styles.resumoItemLabel}>Trabalhadas</Text>
+                    </View>
+
+                    <View style={styles.resumoItemCard}>
+                      <Ionicons name="hourglass-outline" size={20} color="#3498db" />
+                      <Text style={[styles.resumoItemValue, { color: '#3498db' }]}>
+                        {formatarHoras(previstasHoras)}
+                      </Text>
+                      <Text style={styles.resumoItemLabel}>Previstas</Text>
+                    </View>
+
+                    <View style={styles.resumoItemCard}>
+                      <Ionicons name="trending-up-outline" size={20} color={saldoHoras >= 0 ? '#27ae60' : '#e74c3c'} />
+                      <Text style={[styles.resumoItemValue, { color: saldoHoras >= 0 ? '#27ae60' : '#e74c3c' }]}>
+                        {formatarHoras(saldoHoras)}
+                      </Text>
+                      <Text style={styles.resumoItemLabel}>Saldo</Text>
+                    </View>
+
+                    <View style={styles.resumoItemCard}>
+                      <Ionicons name="close-circle-outline" size={20} color="#e74c3c" />
+                      <Text style={[styles.resumoItemValue, { color: '#e74c3c' }]}>{faltasCount}</Text>
+                      <Text style={styles.resumoItemLabel}>Faltas</Text>
+                    </View>
+
+                    <View style={styles.resumoItemCard}>
+                      <Ionicons name="calendar-outline" size={20} color="#2a9d8f" />
+                      <Text style={[styles.resumoItemValue, { color: '#2a9d8f' }]}>{folgasCount}</Text>
+                      <Text style={styles.resumoItemLabel}>Folgas</Text>
+                    </View>
+
+                    <View style={styles.resumoItemCard}>
+                      <Ionicons name="checkmark-circle-outline" size={20} color="#4CAF50" />
+                      <Text style={[styles.resumoItemValue, { color: '#4CAF50' }]}>
+                        {diasComInfo.filter(d => d.temBatida).length}
+                      </Text>
+                      <Text style={styles.resumoItemLabel}>Dias trabalhados</Text>
+                    </View>
+                  </>
+                )}
+              </View>
+            </ScrollView>
+          </Animated.View>
+        </View>
+
+        <Text style={styles.subtitulo}>Registros do Mês</Text>
+
+        <Animated.View style={{ opacity: fadeAnim, flex: 1 }}>
+          <FlatList
+            data={diasComInfo}
+            keyExtractor={item => item.data}
+            renderItem={renderDia}
+            ListEmptyComponent={
+              <View style={styles.listaVazia}>
+                <Ionicons name="calendar-outline" size={48} color="#ddd" />
+                <Text style={styles.listaVaziaTexto}>Nenhum registro neste mês</Text>
+              </View>
+            }
+            showsVerticalScrollIndicator={false}
+          />
+        </Animated.View>
+      </View>
 
       <Modal visible={modalVisivel} animationType="slide" transparent>
         <View style={styles.modalBackground}>
           <View style={styles.modalContainer}>
-            <ScrollView>
-              <Text style={{ fontWeight: '700', fontSize: 16, marginBottom: 8 }}>{diaSelecionado?.data}</Text>
-
-              {/* Estabelecimento fechado (toggle) */}
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                <Text>Estabelecimento fechado</Text>
-                <Switch value={!!diaSelecionado?.fechado} onValueChange={toggleFechado} />
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>{formatarData(diaSelecionado?.data || '')}</Text>
+                <TouchableOpacity onPress={() => setModalVisivel(false)} style={styles.modalCloseBtn}>
+                  <Ionicons name="close" size={24} color="#666" />
+                </TouchableOpacity>
               </View>
 
-              {/* Folgas por funcionário */}
-              <Text style={{ fontWeight: '700', marginBottom: 6 }}>Folgas autorizadas</Text>
-              {funcionarios.length === 0 ? <Text style={{ marginBottom: 8 }}>Nenhum funcionário cadastrado</Text> : null}
-
-{(funcionarioSelecionado === "todos"
-  ? funcionarios
-  : funcionarios.filter(f => f.id === funcionarioSelecionado)
-).map(f => {
-  const marcado = (diaSelecionado?.folgas ?? []).includes(f.id);
-  return (
-    <TouchableOpacity
-      key={f.id}
-      onPress={() => toggleFolgaFuncionario(f.id)}
-      style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 }}
-    >
-      <Text>{f.nome} — {(f.cargaDiariaHoras ?? cargaDiariaPadrao)}h</Text>
-      <View style={[styles.checkbox, marcado ? styles.checkboxOn : styles.checkboxOff]}>
-        {marcado ? <Ionicons name="checkmark" size={16} color="#fff" /> : null}
-      </View>
-    </TouchableOpacity>
-  );
-})}
-
-              <View style={{ height: 8 }} />
-
-  {/* Batidas — somente para funcionário específico */}
-<Text style={{ fontWeight: '700', marginBottom: 6 }}>Batidas</Text>
-
-{funcionarioSelecionado === 'todos' ? (
-  <Text style={{ marginBottom: 10 }}>
-    Selecione um funcionário para editar horários.
-  </Text>
-) : (
-  <>
-    {(() => {
-      const batidasDoFunc = (diaSelecionado?.batidas ?? [])
-        .filter(b => b.funcionarioId === funcionarioSelecionado);
-
-      return (
-        <>
-          {batidasDoFunc.length === 0 && (
-            <Text style={{ marginBottom: 10 }}>
-              Nenhuma batida cadastrada. Você pode adicionar manualmente.
-            </Text>
-          )}
-
-          {batidasDoFunc.map(b => {
-            const idxOriginal = diaSelecionado!.batidas.findIndex(x => x.id === b.id);
-
-            return (
-              <View key={b.id} style={{ marginBottom: 12 }}>
-                <Text style={{ fontWeight: '700' }}>
-                  {b.tipo.replace('_', ' ').toUpperCase()}
-                </Text>
-
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-<TextInput
-  value={horasEditando[b.id] ?? b.timestamp.slice(11, 16)}
-  keyboardType="numeric"
-  style={styles.input}
-
-  onChangeText={text => {
-    const limpo = text.replace(/\D/g, '').slice(0, 4);
-    let formatado = limpo;
-    if (limpo.length >= 3) {
-      formatado = `${limpo.slice(0, 2)}:${limpo.slice(2)}`;
-    }
-
-    setHorasEditando(prev => ({
-      ...prev,
-      [b.id]: formatado
-    }));
-  }}
-
-  onBlur={() => {
-    const valor = horasEditando[b.id];
-    if (!valor) return;
-
-    const [hh, mm] = valor.split(':').map(Number);
-    if (hh > 23 || mm > 59) return;
-
-    const [ano, mes, dia] = diaSelecionado!.data.split('-').map(Number);
-    const dt = new Date(ano, mes - 1, dia, hh, mm);
-
-    const novas = [...diaSelecionado!.batidas];
-    novas[idxOriginal] = { ...b, timestamp: dt.toISOString() };
-
-    setDiaSelecionado({
-      ...diaSelecionado!,
-      batidas: novas
-    });
-  }}
-/>
-
-
-                  <TouchableOpacity
-                    onPress={() => removerBatida(b.id)}
-                    style={{ backgroundColor: '#900', padding: 8, borderRadius: 6 }}
-                  >
-                    <Text style={{ color: '#fff' }}>Remover</Text>
-                  </TouchableOpacity>
+              {isFuture(diaSelecionado?.data || '') && (
+                <View style={styles.futureWarning}>
+                  <Ionicons name="warning-outline" size={20} color="#FF9800" />
+                  <Text style={styles.futureWarningText}>
+                    Este dia é futuro. Apenas folgas e fechamento podem ser configurados.
+                  </Text>
                 </View>
+              )}
+
+              {funcionarioSelecionado === 'todos' ? (
+                <>
+                  <View style={styles.modalSection}>
+                    <View style={styles.switchContainer}>
+                      <Text style={styles.switchLabel}>Estabelecimento fechado</Text>
+                      <Switch
+                        value={!!diaSelecionado?.fechado}
+                        onValueChange={toggleFechado}
+                        trackColor={{ false: '#ddd', true: '#2927B4' }}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.modalSection}>
+                    <Text style={styles.sectionTitle}>Status dos Funcionários</Text>
+
+                    <View style={styles.filterButtons}>
+                      <TouchableOpacity
+                        style={[styles.filterButton, filterStatus === 'todos' && styles.filterButtonActive]}
+                        onPress={() => setFilterStatus('todos')}
+                      >
+                        <Text style={[styles.filterButtonText, filterStatus === 'todos' && styles.filterButtonTextActive]}>
+                          Todos ({funcionarios.length})
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.filterButton, filterStatus === 'presente' && styles.filterButtonActive]}
+                        onPress={() => setFilterStatus('presente')}
+                      >
+                        <Text style={[styles.filterButtonText, filterStatus === 'presente' && styles.filterButtonTextActive]}>
+                          Presentes
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.filterButton, filterStatus === 'ausente' && styles.filterButtonActive]}
+                        onPress={() => setFilterStatus('ausente')}
+                      >
+                        <Text style={[styles.filterButtonText, filterStatus === 'ausente' && styles.filterButtonTextActive]}>
+                          Ausentes
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.filterButton, filterStatus === 'folga' && styles.filterButtonActive]}
+                        onPress={() => setFilterStatus('folga')}
+                      >
+                        <Text style={[styles.filterButtonText, filterStatus === 'folga' && styles.filterButtonTextActive]}>
+                          Folgas
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    {funcionarios.map(f => {
+                      const batidasDoFunc = (diaSelecionado?.batidas ?? []).filter(b => b.funcionarioId === f.id);
+                      const temBatida = batidasDoFunc.length > 0;
+                      const folgaAutorizada = (diaSelecionado?.folgas ?? []).includes(f.id);
+                      const antesAdmissao = antesDaAdmissao(diaSelecionado?.data || '', f.id);
+
+                      if (filterStatus === 'presente' && (!temBatida || diaSelecionado?.fechado)) return null;
+                      if (filterStatus === 'ausente' && (temBatida || folgaAutorizada || diaSelecionado?.fechado || !ehDiaUtil(diaSelecionado?.data || '') || antesAdmissao)) return null;
+                      if (filterStatus === 'folga' && (!folgaAutorizada && ehDiaUtil(diaSelecionado?.data || ''))) return null;
+
+                      return (
+                        <View key={f.id} style={styles.funcionarioCard}>
+                          <View style={styles.funcionarioHeader}>
+                            <View style={styles.avatarPlaceholder}>
+                              <Text style={styles.avatarText}>{f.nome.charAt(0).toUpperCase()}</Text>
+                            </View>
+                            <View style={styles.funcionarioInfo}>
+                              <Text style={styles.funcionarioNome}>{f.nome}</Text>
+                              <Text style={styles.funcionarioCarga}>{(f.cargaDiariaHoras ?? cargaDiariaPadrao)}h/dia</Text>
+                            </View>
+                            <TouchableOpacity
+                              onPress={() => toggleFolgaFuncionario(f.id)}
+                              style={[styles.folgaButton, folgaAutorizada ? styles.folgaButtonActive : styles.folgaButtonInactive]}
+                            >
+                              <Ionicons
+                                name={folgaAutorizada ? 'checkmark' : 'add'}
+                                size={16}
+                                color={folgaAutorizada ? '#fff' : '#666'}
+                              />
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View style={styles.modalSection}>
+                    <View style={styles.switchContainer}>
+                      <Text style={styles.switchLabel}>Estabelecimento fechado</Text>
+                      <Switch
+                        value={!!diaSelecionado?.fechado}
+                        onValueChange={toggleFechado}
+                        trackColor={{ false: '#ddd', true: '#2927B4' }}
+                      />
+                    </View>
+
+                    <View style={styles.switchContainer}>
+                      <Text style={styles.switchLabel}>
+                        Folga para {NomeFuncionario(funcionarioSelecionado)}
+                      </Text>
+                      <Switch
+                        value={(diaSelecionado?.folgas ?? []).includes(funcionarioSelecionado)}
+                        onValueChange={() => toggleFolgaFuncionario(funcionarioSelecionado)}
+                        trackColor={{ false: '#ddd', true: '#2927B4' }}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.modalSection}>
+                    <Text style={styles.sectionTitle}>Batidas</Text>
+
+                    {isFuture(diaSelecionado?.data || '') ? (
+                      <Text style={styles.futureText}>
+                        Não é possível editar batidas em dias futuros.
+                      </Text>
+                    ) : (
+                      <>
+                        {(diaSelecionado?.batidas ?? [])
+                          .filter(b => b.funcionarioId === funcionarioSelecionado)
+                          .map(b => (
+                            <View key={b.id} style={styles.batidaModalItem}>
+                              <View style={[styles.batidaModalIcon, { backgroundColor: `${icones[b.tipo].cor}15` }]}>
+                                <Ionicons name={icones[b.tipo].nome} size={20} color={icones[b.tipo].cor} />
+                              </View>
+                              <View style={styles.batidaModalInfo}>
+                                <Text style={styles.batidaModalTipo}>{rotuloBatida[b.tipo]}</Text>
+                                <TextInput
+                                  value={horasEditando[b.id] ?? horaDeTimestamp(b.timestamp)}
+                                  style={styles.timeInput}
+                                  placeholder="HH:MM"
+                                  onChangeText={text => {
+                                    const limpo = text.replace(/[^\d:]/g, '');
+                                    let formatado = limpo;
+                                    if (limpo.length <= 2) {
+                                      formatado = limpo;
+                                    } else if (limpo.length <= 4) {
+                                      formatado = `${limpo.slice(0, 2)}:${limpo.slice(2)}`;
+                                    } else {
+                                      formatado = `${limpo.slice(0, 2)}:${limpo.slice(2, 4)}`;
+                                    }
+                                    setHorasEditando(prev => ({ ...prev, [b.id]: formatado }));
+                                  }}
+                                />
+                              </View>
+                              <TouchableOpacity
+                                onPress={() => removerBatida(b.id)}
+                                style={styles.deleteButton}
+                              >
+                                <Ionicons name="trash-outline" size={20} color="#e74c3c" />
+                              </TouchableOpacity>
+                            </View>
+                          ))}
+                      </>
+                    )}
+                  </View>
+                </>
+              )}
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity style={styles.saveButton} onPress={salvarEdicao}>
+                  <Ionicons name="save-outline" size={20} color="#fff" />
+                  <Text style={styles.saveButtonText}>Salvar Alterações</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={() => setModalVisivel(false)}
+                >
+                  <Text style={styles.cancelButtonText}>Cancelar</Text>
+                </TouchableOpacity>
               </View>
-            );
-          })}
-        </>
-      );
-    })()}
-
-
-
-
-    {/* Botão para criar nova batida manualmente */}
-
- // ==============================
-// Botão para criar nova batida manualmente SEM precisar escolher tipo
-// ==============================
-
-<TouchableOpacity
-onPress={() => {
-  if (!diaSelecionado) return;
-
-  const novaId = String(Date.now());
-
-  const batidasDoFunc = diaSelecionado.batidas.filter(
-    b => b.funcionarioId === funcionarioSelecionado
-  );
-
-  const obterProximoTipo = (): BatidaTipo => {
-    const q = batidasDoFunc.length;
-    if (q === 0) return 'entrada';
-    if (q === 1) return 'saida_almoco';
-    if (q === 2) return 'retorno_almoco';
-    if (q === 3) return 'saida_final';
-    return 'saida_final';
-  };
-
-  const novaBatida: Batida = {
-    id: novaId,
-    funcionarioId: funcionarioSelecionado,
-    tipo: obterProximoTipo(),
-    timestamp: new Date(diaSelecionado.data + 'T00:00:00').toISOString()
-  };
-
-  setDiaSelecionado({
-    ...diaSelecionado,
-    batidas: [...diaSelecionado.batidas, novaBatida]
-  });
-}}
-
-
-  style={{
-    backgroundColor: '#2927B4',
-    padding: 10,
-    borderRadius: 6,
-    marginBottom: 12
-  }}
->
-  <Text style={{ color: '#fff', textAlign: 'center' }}>Adicionar batida</Text>
-</TouchableOpacity>
-
-  </>
-)}
-
-
-
-              <View style={{ height: 8 }} />
-
-              <Button title="Salvar" onPress={salvarEdicao} />
-              <View style={{ height: 8 }} />
-              <Button title="Cancelar" onPress={() => setModalVisivel(false)} color="red" />
             </ScrollView>
           </View>
         </View>
@@ -882,32 +1035,519 @@ onPress={() => {
   );
 }
 
-// ==============================
-// ESTILOS
-// ==============================
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20, backgroundColor: '#fff' },
-  titulo: { fontSize: 26, fontWeight: '700', marginBottom: 12 },
-  resumoBox: {
+  container: {
+    flex: 1,
+    backgroundColor: '#f8f9fa'
+  },
+  headerGradient: {
+    paddingTop: 60,
+    paddingBottom: 30,
+    paddingHorizontal: 20,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  titulo: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#fff',
+    textAlign: 'center',
+  },
+  content: {
+    flex: 1,
+    padding: 20,
+    paddingTop: 30,
+  },
+  filtrosContainer: {
+    marginBottom: 20,
+  },
+  seletorContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#2927B4',
-    padding: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 3,
+    marginBottom: 15,
+  },
+  seletorIcon: {
+    marginRight: 10,
+  },
+  picker: {
+    flex: 1,
+    color: '#2c3e50',
+  },
+  navegacaoMes: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 15,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 3,
+    
+  },
+  navBtn: {
+    padding: 8,
     borderRadius: 8,
+    backgroundColor: '#f0f0ff',
+  },
+  mesContainer: {
+    alignItems: 'center',
+  },
+  mesSelecionado: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#2c3e50',
+  },
+  mesInfo: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+  },
+  acordeaoContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+    overflow: 'hidden',
+  },
+  acordeaoHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#f8f9fa',
+  },
+  acordeaoHeaderContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+
+  },
+  acordeaoTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#2c3e50',
+    marginLeft: 10,
+  },
+  acordeaoContent: {
+    overflow: 'hidden',
+  },
+  acordeaoScrollContent: {
+    padding: 20,
+  },
+  resumoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  resumoItemCard: {
+    width: '48%',
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    padding: 15,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  resumoItemValue: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginTop: 8,
+    color: '#2c3e50',
+  },
+  resumoItemLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+  },
+  subtitulo: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2c3e50',
+    marginBottom: 15,
+    marginLeft: 5,
+  },
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 12,
   },
-  resumoTexto: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  navegacaoMes: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
-  mesSelecionado: { fontSize: 16, fontWeight: '700', color: '#2927B4', marginHorizontal: 8 },
-  card: { backgroundColor: '#f8f9fa', padding: 12, borderRadius: 8, marginBottom: 10 },
-  data: { fontSize: 16, fontWeight: '700', marginBottom: 6 },
-  linhaBatida: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  total: { marginTop: 6, fontWeight: '700', color: '#2c3e50' },
-  modalBackground: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center' },
-  modalContainer: { width: '92%', backgroundColor: '#fff', borderRadius: 8, padding: 16, maxHeight: '84%' },
-  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 6, padding: 8, marginTop: 6, width: 120 },
-  btnEditar: { marginTop: 10, backgroundColor: '#2927B4', padding: 8, borderRadius: 6, alignItems: 'center' },
-  checkbox: { width: 28, height: 28, borderRadius: 6, justifyContent: 'center', alignItems: 'center' },
-  checkboxOn: { backgroundColor: '#2a9d8f' },
-  checkboxOff: { borderWidth: 1, borderColor: '#ccc', backgroundColor: '#fff' },
+  data: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2c3e50',
+  },
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  resumoContainer: {
+    marginBottom: 15,
+  },
+  resumoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  resumoLabel: {
+    fontSize: 14,
+    color: '#666',
+    marginLeft: 8,
+    marginRight: 6,
+  },
+  resumoValor: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#2c3e50',
+  },
+  btnConfigurar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2927B4',
+    padding: 12,
+    borderRadius: 10,
+    marginTop: 8,
+  },
+  btnConfigurarTexto: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  btnDesabilitado: {
+    backgroundColor: '#cccccc',
+    opacity: 0.6,
+  },
+  batidaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8f9fa',
+    padding: 10,
+    borderRadius: 10,
+    marginBottom: 8,
+  },
+  batidaIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  batidaInfo: {
+    flex: 1,
+  },
+  batidaTipo: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#2c3e50',
+    marginBottom: 2,
+  },
+  batidaHora: {
+    fontSize: 13,
+    color: '#666',
+  },
+  totalContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#e8f4fc',
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 10,
+    borderLeftWidth: 4,
+    borderLeftColor: '#3498db',
+  },
+  totalText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#2c3e50',
+    marginLeft: 8,
+  },
+  semBatidas: {
+    alignItems: 'center',
+    padding: 20,
+  },
+  semBatidasTexto: {
+    fontSize: 14,
+    color: '#999',
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
+  listaVazia: {
+    alignItems: 'center',
+    padding: 40,
+  },
+  listaVaziaTexto: {
+    fontSize: 16,
+    color: '#999',
+    marginTop: 12,
+    textAlign: 'center',
+  },
+  modalBackground: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContainer: {
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    maxHeight: '80%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#2c3e50',
+    flex: 1,
+  },
+  modalCloseBtn: {
+    padding: 4,
+  },
+  futureWarning: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff3cd',
+    padding: 12,
+    marginHorizontal: 20,
+    marginTop: 10,
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#FF9800',
+  },
+  futureWarningText: {
+    color: '#856404',
+    fontSize: 14,
+    marginLeft: 8,
+    flex: 1,
+  },
+  modalSection: {
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  switchContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#f8f9fa',
+    padding: 12,
+    borderRadius: 10,
+    marginBottom: 12,
+  },
+  switchLabel: {
+    fontSize: 16,
+    color: '#2c3e50',
+    flex: 1,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#2c3e50',
+    marginBottom: 15,
+  },
+  filterButtons: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 15,
+    gap: 8,
+  },
+  filterButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#f0f0f0',
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  filterButtonActive: {
+    backgroundColor: '#2927B4',
+    borderColor: '#2927B4',
+  },
+  filterButtonText: {
+    fontSize: 14,
+    color: '#666',
+  },
+  filterButtonTextActive: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  funcionarioCard: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    padding: 15,
+    marginBottom: 10,
+  },
+  funcionarioHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  avatarPlaceholder: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#e2e2ff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  avatarText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#2927B4',
+  },
+  funcionarioInfo: {
+    flex: 1,
+  },
+  funcionarioNome: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2c3e50',
+  },
+  funcionarioCarga: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 2,
+  },
+  folgaButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  folgaButtonActive: {
+    backgroundColor: '#2a9d8f',
+  },
+  folgaButtonInactive: {
+    backgroundColor: '#f0f0f0',
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  futureText: {
+    color: '#666',
+    fontStyle: 'italic',
+    textAlign: 'center',
+    padding: 20,
+  },
+  batidaModalItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8f9fa',
+    padding: 12,
+    borderRadius: 10,
+    marginBottom: 10,
+  },
+  batidaModalIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  batidaModalInfo: {
+    flex: 1,
+  },
+  batidaModalTipo: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#2c3e50',
+    marginBottom: 4,
+  },
+  timeInput: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 6,
+    padding: 8,
+    fontSize: 16,
+    color: '#2c3e50',
+  },
+  deleteButton: {
+    padding: 8,
+    marginLeft: 8,
+  },
+  modalButtons: {
+    padding: 20,
+  },
+  saveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2927B4',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  saveButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  cancelButton: {
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e74c3c',
+    alignItems: 'center',
+  },
+  cancelButtonText: {
+    color: '#e74c3c',
+    fontSize: 16,
+    fontWeight: '600',
+  },
 });
