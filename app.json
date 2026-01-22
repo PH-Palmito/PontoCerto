@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "registro-ponto",
-    "slug": "registro-ponto",
+    "name": "PontoCerto",
+    "slug": "PontoCerto",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",

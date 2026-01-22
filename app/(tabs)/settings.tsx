@@ -9,18 +9,23 @@ import {
   ScrollView,
   Alert,
   Switch,
+  Modal,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 
-// Tipos
+// Tipos atualizados
 type Funcionario = {
   id: string;
   nome: string;
+  cargo?: string;        // Novo campo
+  cpf?: string;         // Novo campo
+  pis?: string;         // Novo campo
   cargaDiariaHoras: number;
   diasSemana: number;
   permiteExtras: boolean;
   admissao: string;
+  pin: string;
 };
 
 type Empresa = {
@@ -30,12 +35,10 @@ type Empresa = {
   endereco: string;
   telefone: string;
   email: string;
-  // Controle do modelo de jornada
-  controleAlmoco: boolean; // Mudado de temAlmocoFixo para controleAlmoco
-  // Horários (alguns opcionais)
+  controleAlmoco: boolean;
   horaEntrada: string;
-  horaAlmocoSugeridaInicio?: string; // Sugestão, não obrigatório
-  horaAlmocoSugeridaFim?: string;   // Sugestão, não obrigatório
+  horaAlmocoSugeridaInicio?: string;
+  horaAlmocoSugeridaFim?: string;
   horaSaidaFinal: string;
   cargaHorariaPadrao: number;
 };
@@ -43,6 +46,11 @@ type Empresa = {
 export default function Settings() {
   // Estado para controle de qual seção está expandida
   const [secaoExpandida, setSecaoExpandida] = useState<'empresa' | 'funcionarios' | null>('empresa');
+
+  // ========== MODAL PARA EDITAR SENHA ==========
+  const [modalVisivel, setModalVisivel] = useState(false);
+  const [funcionarioEditando, setFuncionarioEditando] = useState<Funcionario | null>(null);
+  const [novoPin, setNovoPin] = useState('');
 
   // ========== ESTADOS DA EMPRESA ==========
   const [empresa, setEmpresa] = useState<Empresa>({
@@ -52,7 +60,7 @@ export default function Settings() {
     endereco: '',
     telefone: '',
     email: '',
-    controleAlmoco: true, // Padrão: com controle de almoço
+    controleAlmoco: true,
     horaEntrada: '08:00',
     horaAlmocoSugeridaInicio: '12:00',
     horaAlmocoSugeridaFim: '13:00',
@@ -63,6 +71,10 @@ export default function Settings() {
 
   // ========== ESTADOS DOS FUNCIONÁRIOS ==========
   const [nome, setNome] = useState('');
+  const [cargo, setCargo] = useState(''); // Novo estado
+  const [cpf, setCpf] = useState(''); // Novo estado
+  const [pis, setPis] = useState(''); // Novo estado
+  const [pin, setPin] = useState('');
   const [cargaDiaria, setCargaDiaria] = useState('');
   const [diasSemana, setDiasSemana] = useState('');
   const [permiteExtras, setPermiteExtras] = useState(false);
@@ -81,9 +93,7 @@ export default function Settings() {
       const dados = await AsyncStorage.getItem('empresa');
       if (dados) {
         const empresaSalva = JSON.parse(dados);
-        // Para compatibilidade com versões antigas
         if (empresaSalva.controleAlmoco === undefined) {
-          // Se for dado antigo com 'temAlmocoFixo', converte
           empresaSalva.controleAlmoco = empresaSalva.temAlmocoFixo !== false;
         }
         setEmpresa(empresaSalva);
@@ -148,12 +158,49 @@ export default function Settings() {
     setFuncionarios(dados ? JSON.parse(dados) : []);
   };
 
+  // Funções de formatação
+  const formatarCPF = (text: string) => {
+    const nums = text.replace(/\D/g, '');
+    if (nums.length <= 3) return nums;
+    if (nums.length <= 6) return `${nums.slice(0, 3)}.${nums.slice(3)}`;
+    if (nums.length <= 9) return `${nums.slice(0, 3)}.${nums.slice(3, 6)}.${nums.slice(6)}`;
+    return `${nums.slice(0, 3)}.${nums.slice(3, 6)}.${nums.slice(6, 9)}-${nums.slice(9, 11)}`;
+  };
+
+  const formatarPIS = (text: string) => {
+    const nums = text.replace(/\D/g, '');
+    if (nums.length <= 3) return nums;
+    if (nums.length <= 8) return `${nums.slice(0, 3)}.${nums.slice(3)}`;
+    if (nums.length <= 10) return `${nums.slice(0, 3)}.${nums.slice(3, 8)}.${nums.slice(8)}`;
+    return `${nums.slice(0, 3)}.${nums.slice(3, 8)}.${nums.slice(8, 10)}-${nums.slice(10, 11)}`;
+  };
+
   const cadastrarFuncionario = async () => {
     setErro('');
 
     const nomeTrim = nome.trim();
     if (!nomeTrim) {
       setErro('Nome vazio.');
+      return;
+    }
+
+    // PIN não é obrigatório, mas se fornecido, deve ter pelo menos 4 números
+    if (pin && pin.length < 4) {
+      setErro('O PIN deve ter pelo menos 4 números se fornecido.');
+      return;
+    }
+
+    // Validação de CPF (opcional, mas se preencher deve ter 11 dígitos)
+    const cpfNumeros = cpf.replace(/\D/g, '');
+    if (cpfNumeros && cpfNumeros.length !== 11) {
+      setErro('CPF deve ter 11 dígitos se fornecido.');
+      return;
+    }
+
+    // Validação de PIS (opcional, mas se preencher deve ter 11 dígitos)
+    const pisNumeros = pis.replace(/\D/g, '');
+    if (pisNumeros && pisNumeros.length !== 11) {
+      setErro('PIS deve ter 11 dígitos se fornecido.');
       return;
     }
 
@@ -177,10 +224,14 @@ export default function Settings() {
     const novo: Funcionario = {
       id: Date.now().toString(),
       nome: nomeTrim,
+      cargo: cargo.trim() || undefined,
+      cpf: cpfNumeros || undefined,
+      pis: pisNumeros || undefined,
       cargaDiariaHoras: horas,
       diasSemana: dias,
       permiteExtras,
       admissao: new Date().toISOString().split('T')[0],
+      pin: pin || '',
     };
 
     const lista = [...funcionarios, novo];
@@ -188,6 +239,10 @@ export default function Settings() {
 
     // Reset do formulário
     setNome('');
+    setCargo('');
+    setCpf('');
+    setPis('');
+    setPin('');
     setCargaDiaria('');
     setDiasSemana('');
     setPermiteExtras(false);
@@ -214,7 +269,52 @@ export default function Settings() {
     );
   };
 
-  // ========== FUNÇÕES DE FORMATAÇÃO ==========
+  // ========== FUNÇÕES PARA EDITAR SENHA ==========
+  const abrirModalEditarSenha = (funcionario: Funcionario) => {
+    setFuncionarioEditando(funcionario);
+    setNovoPin(funcionario.pin || '');
+    setModalVisivel(true);
+  };
+
+  const salvarNovaSenha = async () => {
+    if (!funcionarioEditando) return;
+
+    // Validação: se fornecer PIN, deve ter pelo menos 4 números
+    if (novoPin && novoPin.length < 4) {
+      Alert.alert('Atenção', 'Se fornecer um PIN, ele deve ter pelo menos 4 números.');
+      return;
+    }
+
+    try {
+      const listaAtualizada = funcionarios.map(f =>
+        f.id === funcionarioEditando.id
+          ? { ...f, pin: novoPin }
+          : f
+      );
+
+      await AsyncStorage.setItem('funcionarios', JSON.stringify(listaAtualizada));
+      carregarFuncionarios();
+      Alert.alert('Sucesso', 'PIN atualizado com sucesso!');
+      fecharModal();
+    } catch (error) {
+      Alert.alert('Erro', 'Não foi possível atualizar o PIN.');
+    }
+  };
+
+  const fecharModal = () => {
+    setModalVisivel(false);
+    setFuncionarioEditando(null);
+    setNovoPin('');
+  };
+
+  // Função para exibir apenas os últimos dígitos do CPF
+  const formatarCPFVisual = (cpf?: string) => {
+    if (!cpf) return 'CPF não informado';
+    // Mostra apenas os últimos 4 dígitos: ***.***.***-XX
+    return `***.***.***-${cpf.slice(7, 11)}`;
+  };
+
+  // ========== FUNÇÕES DE FORMATAÇÃO EMPRESA ==========
   const formatarCNPJ = (text: string) => {
     const nums = text.replace(/\D/g, '');
     if (nums.length <= 2) return nums;
@@ -265,16 +365,56 @@ export default function Settings() {
           {erro ? <Text style={styles.erro}>{erro}</Text> : null}
 
           <TextInput
-            placeholder="Nome completo"
+            placeholder="Nome completo *"
             value={nome}
             onChangeText={setNome}
             style={styles.input}
           />
 
+          <TextInput
+            placeholder="Cargo (opcional)"
+            value={cargo}
+            onChangeText={setCargo}
+            style={[styles.input, { marginTop: 10 }]}
+          />
+
           <View style={styles.row}>
             <View style={styles.halfInput}>
               <TextInput
-                placeholder="Carga diária (h)"
+                placeholder="CPF"
+                value={cpf}
+                onChangeText={(text) => setCpf(formatarCPF(text))}
+                style={styles.input}
+                keyboardType="numeric"
+                maxLength={14}
+              />
+            </View>
+            <View style={styles.halfInput}>
+              <TextInput
+                placeholder="PIS"
+                value={pis}
+                onChangeText={(text) => setPis(formatarPIS(text))}
+                style={styles.input}
+                keyboardType="numeric"
+                maxLength={14}
+              />
+            </View>
+          </View>
+
+          <TextInput
+            placeholder="Definir PIN de acesso (opcional, mínimo 4 números)"
+            value={pin}
+            onChangeText={(text) => setPin(text.replace(/[^0-9]/g, ''))}
+            style={[styles.input, { marginTop: 10 }]}
+            keyboardType="numeric"
+            maxLength={6}
+            secureTextEntry={false}
+          />
+
+          <View style={styles.row}>
+            <View style={styles.halfInput}>
+              <TextInput
+                placeholder="Carga diária (h) *"
                 keyboardType="numeric"
                 value={cargaDiaria}
                 onChangeText={setCargaDiaria}
@@ -283,7 +423,7 @@ export default function Settings() {
             </View>
             <View style={styles.halfInput}>
               <TextInput
-                placeholder="Dias/semana"
+                placeholder="Dias/semana *"
                 keyboardType="numeric"
                 value={diasSemana}
                 onChangeText={setDiasSemana}
@@ -311,33 +451,56 @@ export default function Settings() {
           ) : (
             <FlatList
               data={funcionarios}
-              scrollEnabled={false} // Pois já está dentro de um ScrollView
+              scrollEnabled={false}
               keyExtractor={(item) => item.id}
               renderItem={({ item }) => (
                 <View style={styles.cardFuncionario}>
                   <View style={styles.funcionarioInfo}>
                     <Text style={styles.funcionarioNome}>{item.nome}</Text>
+
+                    {item.cargo && (
+                      <Text style={styles.funcionarioCargo}>{item.cargo}</Text>
+                    )}
+
+                    {item.cpf && (
+                      <Text style={styles.funcionarioCPF}>{formatarCPFVisual(item.cpf)}</Text>
+                    )}
+
                     <Text style={styles.funcionarioDetalhes}>
                       {item.cargaDiariaHoras}h/dia • {item.diasSemana} dias/semana •{' '}
                       {item.permiteExtras ? 'Com extras' : 'Sem extras'}
                     </Text>
+
                     <Text style={styles.funcionarioAdmissao}>
                       Admitido em: {item.admissao}
                     </Text>
+
+                    <Text style={styles.funcionarioPin}>
+                      PIN: {item.pin ? '••••' : 'Não definido'}
+                    </Text>
                   </View>
-                  <TouchableOpacity
-                    onPress={() => removerFuncionario(item.id)}
-                    style={styles.botaoRemoverFuncionario}
-                  >
-                    <Ionicons name="trash" size={18} color="#fff" />
-                  </TouchableOpacity>
+                  <View style={styles.botoesFuncionario}>
+                    <TouchableOpacity
+                      onPress={() => abrirModalEditarSenha(item)}
+                      style={styles.botaoEditarSenha}
+                    >
+                      <Ionicons name="key" size={18} color="#fff" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => removerFuncionario(item.id)}
+                      style={styles.botaoRemoverFuncionario}
+                    >
+                      <Ionicons name="trash" size={18} color="#fff" />
+                    </TouchableOpacity>
+                  </View>
                 </View>
               )}
             />
           )}
         </View>
       )}
-  {/* SEPARADOR */}
+
+      {/* SEPARADOR */}
       <View style={styles.separador} />
 
       {/* SEÇÃO DA EMPRESA */}
@@ -361,6 +524,7 @@ export default function Settings() {
 
       {secaoExpandida === 'empresa' && (
         <View style={styles.secaoConteudo}>
+          {/* ... (código da empresa permanece igual) ... */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Nome da Empresa *</Text>
             <TextInput
@@ -411,14 +575,13 @@ export default function Settings() {
           <View style={styles.switchContainer}>
             <View style={{ flex: 1 }}>
               <Text style={{ fontWeight: '600', marginBottom: 4 }}>
-  Controle de pausa
-</Text>
-<Text style={{ fontSize: 12, color: '#666' }}>
-  {empresa.controleAlmoco
-    ? 'Funcionário DEVE bater ponto ao iniciar e encerrar a pausa'
-    : 'Apenas entrada e saída - sem controle de pausa'}
-</Text>
-
+                Controle de pausa
+              </Text>
+              <Text style={{ fontSize: 12, color: '#666' }}>
+                {empresa.controleAlmoco
+                  ? 'Funcionário DEVE bater ponto ao iniciar e encerrar a pausa'
+                  : 'Apenas entrada e saída - sem controle de pausa'}
+              </Text>
             </View>
             <Switch
               value={empresa.controleAlmoco}
@@ -450,8 +613,8 @@ export default function Settings() {
           {empresa.controleAlmoco && (
             <>
               <Text style={[styles.subtitulo, { fontSize: 14, marginTop: 0 }]}>
-  Horário Sugerido de Pausa (não obrigatório)
-</Text>
+                Horário Sugerido de Pausa (não obrigatório)
+              </Text>
 
               <View style={styles.row}>
                 <View style={styles.halfInput}>
@@ -464,9 +627,7 @@ export default function Settings() {
                   />
                 </View>
                 <View style={styles.halfInput}>
-
-<Text style={styles.label}>Retorno da Pausa</Text>
-
+                  <Text style={styles.label}>Retorno da Pausa</Text>
                   <TextInput
                     style={styles.input}
                     value={empresa.horaAlmocoSugeridaFim || '13:00'}
@@ -476,10 +637,9 @@ export default function Settings() {
                 </View>
               </View>
               <Text style={styles.infoBox}>
-  <Ionicons name="information-circle" size={16} color="#3498db" />
-  {' '}O funcionário pode fazer a pausa em qualquer horário, mas DEVE bater ponto ao iniciar e ao retornar.
-</Text>
-
+                <Ionicons name="information-circle" size={16} color="#3498db" />
+                {' '}O funcionário pode fazer a pausa em qualquer horário, mas DEVE bater ponto ao iniciar e ao retornar.
+              </Text>
             </>
           )}
 
@@ -495,9 +655,6 @@ export default function Settings() {
               placeholder="8"
               keyboardType="numeric"
             />
-            <Text style={styles.helperText}>
-
-            </Text>
           </View>
 
           <TouchableOpacity style={styles.botaoSalvar} onPress={salvarEmpresa}>
@@ -515,9 +672,51 @@ export default function Settings() {
         </View>
       )}
 
-      {/* SEPARADOR */}
-      <View style={styles.separador} />
+      {/* MODAL PARA EDITAR SENHA */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={modalVisivel}
+        onRequestClose={fecharModal}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitulo}>
+              Editar PIN - {funcionarioEditando?.nome}
+            </Text>
 
+            <Text style={styles.modalDescricao}>
+              Deixe o campo em branco para remover o PIN. Se fornecer, deve ter pelo menos 4 números.
+            </Text>
+
+            <TextInput
+              placeholder="Novo PIN (opcional)"
+              value={novoPin}
+              onChangeText={(text) => setNovoPin(text.replace(/[^0-9]/g, ''))}
+              style={styles.modalInput}
+              keyboardType="numeric"
+              maxLength={6}
+              secureTextEntry={false}
+            />
+
+            <View style={styles.modalBotoes}>
+              <TouchableOpacity
+                style={[styles.modalBotao, styles.modalBotaoCancelar]}
+                onPress={fecharModal}
+              >
+                <Text style={styles.modalBotaoTextoCancelar}>Cancelar</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalBotao, styles.modalBotaoSalvar]}
+                onPress={salvarNovaSenha}
+              >
+                <Text style={styles.modalBotaoTextoSalvar}>Salvar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -527,7 +726,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8f9fa',
     padding: 16,
-
   },
   tituloPrincipal: {
     fontSize: 24,
@@ -663,7 +861,7 @@ const styles = StyleSheet.create({
   cardFuncionario: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     backgroundColor: '#f8f9fa',
     padding: 12,
     borderRadius: 8,
@@ -676,9 +874,21 @@ const styles = StyleSheet.create({
   },
   funcionarioNome: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
     color: '#2c3e50',
     marginBottom: 4,
+  },
+  funcionarioCargo: {
+    fontSize: 14,
+    color: '#3498db',
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  funcionarioCPF: {
+    fontSize: 13,
+    color: '#666',
+    marginBottom: 4,
+    fontStyle: 'italic',
   },
   funcionarioDetalhes: {
     fontSize: 13,
@@ -688,12 +898,28 @@ const styles = StyleSheet.create({
   funcionarioAdmissao: {
     fontSize: 12,
     color: '#888',
+    marginTop: 2,
+  },
+  funcionarioPin: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 2,
+    fontStyle: 'italic',
+  },
+  botoesFuncionario: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  botaoEditarSenha: {
+    backgroundColor: '#3498db',
+    padding: 8,
+    borderRadius: 6,
+    marginRight: 8,
   },
   botaoRemoverFuncionario: {
     backgroundColor: '#e74c3c',
     padding: 8,
     borderRadius: 6,
-    marginLeft: 12,
   },
   semRegistros: {
     textAlign: 'center',
@@ -718,5 +944,75 @@ const styles = StyleSheet.create({
     color: '#2c3e50',
     flexDirection: 'row',
     alignItems: 'flex-start',
+  },
+  // Estilos do Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
+  },
+  modalTitulo: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#2c3e50',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  modalDescricao: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 20,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  modalInput: {
+    backgroundColor: '#f8f9fa',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    padding: 14,
+    fontSize: 16,
+    color: '#2c3e50',
+    marginBottom: 24,
+    textAlign: 'center',
+  },
+  modalBotoes: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  modalBotao: {
+    flex: 1,
+    padding: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modalBotaoCancelar: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    marginRight: 8,
+  },
+  modalBotaoSalvar: {
+    backgroundColor: '#2927B4',
+    marginLeft: 8,
+  },
+  modalBotaoTextoCancelar: {
+    color: '#666',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  modalBotaoTextoSalvar: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
