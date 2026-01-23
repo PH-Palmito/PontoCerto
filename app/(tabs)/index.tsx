@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   Alert,
   FlatList,
@@ -11,9 +11,13 @@ import {
   View,
   Dimensions,
   Animated,
-  Easing
+  Easing,
+  Modal,
+  Image,
+  ActivityIndicator
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 
 type BatidaTipo = 'entrada' | 'saida_almoco' | 'retorno_almoco' | 'saida_final';
 
@@ -22,6 +26,7 @@ type Batida = {
   tipo: BatidaTipo;
   timestamp: string;
   funcionarioId: string;
+  photoUri?: string;
 };
 
 type Dia = {
@@ -36,6 +41,7 @@ type Funcionario = {
   diasSemana: number;
   permiteExtras: boolean;
   admissao: string;
+  pin: string; // Adicionado campo PIN
 };
 
 type Empresa = {
@@ -63,6 +69,17 @@ export default function PontoScreen() {
   const [funcionarioSelecionado, setFuncionarioSelecionado] = useState<string | null>(null);
   const [animacaoPonto] = useState(new Animated.Value(1));
   const [mostrarFeedbacks, setMostrarFeedbacks] = useState<{[key: string]: boolean}>({});
+
+  // Estados para PIN e Câmera
+  const [modalPinVisivel, setModalPinVisivel] = useState(false);
+  const [cameraVisivel, setCameraVisivel] = useState(false);
+  const [pinDigitado, setPinDigitado] = useState('');
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+  const [tipoBatidaAtual, setTipoBatidaAtual] = useState<BatidaTipo | null>(null);
+
+  // Referências e permissões
+  const cameraRef = useRef<CameraView>(null);
+  const [permission, requestPermission] = useCameraPermissions();
 
   useEffect(() => {
     carregarEmpresa();
@@ -93,35 +110,39 @@ export default function PontoScreen() {
   };
 
   const carregarFuncionarios = async () => {
-    const dados = await AsyncStorage.getItem('funcionarios');
-    if (dados) {
-      setFuncionarios(JSON.parse(dados));
+    try {
+      const dados = await AsyncStorage.getItem('funcionarios');
+      if (dados) {
+        const funcionariosCarregados = JSON.parse(dados);
+        // Garantir que cada funcionário tenha o campo pin
+        const funcionariosComPin = funcionariosCarregados.map((func: any) => ({
+          ...func,
+          pin: func.pin || '', // Se não tiver pin, define como string vazia
+        }));
+        setFuncionarios(funcionariosComPin);
+      }
+    } catch (error) {
+      console.error('Erro ao carregar funcionários:', error);
     }
   };
 
-  // CORREÇÃO: Função para obter data atual no formato YYYY-MM-DD (fuso horário local)
+  // Função para obter data atual no formato YYYY-MM-DD
   const hojeString = () => {
     const data = new Date();
-
-    // Ajusta para o fuso horário local
     const ano = data.getFullYear();
     const mes = String(data.getMonth() + 1).padStart(2, '0');
     const dia = String(data.getDate()).padStart(2, '0');
-
     return `${ano}-${mes}-${dia}`;
   };
 
   const horaLocalISO = () => {
     const data = new Date();
-
-    // Cria uma string ISO sem o Z (para usar horário local)
     const ano = data.getFullYear();
     const mes = String(data.getMonth() + 1).padStart(2, '0');
     const dia = String(data.getDate()).padStart(2, '0');
     const horas = String(data.getHours()).padStart(2, '0');
     const minutos = String(data.getMinutes()).padStart(2, '0');
     const segundos = String(data.getSeconds()).padStart(2, '0');
-
     return `${ano}-${mes}-${dia}T${horas}:${minutos}:${segundos}`;
   };
 
@@ -129,29 +150,20 @@ export default function PontoScreen() {
     const dados = await AsyncStorage.getItem('dias');
     const hoje = hojeString();
 
-    console.log('Data atual:', hoje); // Para debug
-
     if (dados) {
       const parsed: Dia[] = JSON.parse(dados);
       setDias(parsed);
 
-      // Procura o dia atual
       const diaEncontrado = parsed.find(d => d.data === hoje);
-
       if (diaEncontrado) {
         setDiaAtual(diaEncontrado);
-        console.log('Dia encontrado:', diaEncontrado.data);
       } else {
-        // Se não encontrar, cria um novo dia
         const novoDia = { data: hoje, batidas: [] };
         setDiaAtual(novoDia);
-        console.log('Novo dia criado:', novoDia.data);
       }
     } else {
-      // Se não houver dados, cria um novo dia
       const novoDia = { data: hoje, batidas: [] };
       setDiaAtual(novoDia);
-      console.log('Primeiro dia criado:', novoDia.data);
     }
   };
 
@@ -160,7 +172,6 @@ export default function PontoScreen() {
     await AsyncStorage.setItem('dias', JSON.stringify(novosDias));
     setDias(novosDias);
 
-    // Atualiza o dia atual
     const diaAtualizado = novosDias.find(d => d.data === hoje) || { data: hoje, batidas: [] };
     setDiaAtual(diaAtualizado);
   };
@@ -210,7 +221,8 @@ export default function PontoScreen() {
     }, 2000);
   };
 
-  const baterPonto = async () => {
+  // Função para iniciar o processo de bater ponto (com PIN)
+  const iniciarBaterPonto = async () => {
     if (!funcionarioSelecionado) {
       Alert.alert('Selecione um funcionário');
       return;
@@ -221,19 +233,85 @@ export default function PontoScreen() {
       return;
     }
 
-    if (!diaAtual) return;
-
     const tipo = proxTipo();
     if (!tipo) {
       Alert.alert('Completo', 'Todas as batidas do funcionário já foram realizadas.');
       return;
     }
 
+    setTipoBatidaAtual(tipo);
+
+    // Verificar se o funcionário tem PIN cadastrado
+    const funcionario = funcionarios.find(f => f.id === funcionarioSelecionado);
+    if (funcionario?.pin) {
+      // Se tiver PIN, mostrar modal para digitação
+      setPinDigitado('');
+      setModalPinVisivel(true);
+    } else {
+      // Se não tiver PIN, ir direto para a câmera
+      if (!permission?.granted) {
+        const { status } = await requestPermission();
+        if (status !== 'granted') {
+          Alert.alert('Permissão necessária', 'É necessário permitir o acesso à câmera.');
+          return;
+        }
+      }
+      setCameraVisivel(true);
+    }
+  };
+
+  // Função para verificar PIN e abrir câmera
+  const verificarPin = (pin: string) => {
+    const funcionario = funcionarios.find(f => f.id === funcionarioSelecionado);
+    if (funcionario?.pin === pin) {
+      setModalPinVisivel(false);
+      setCameraVisivel(true);
+    } else {
+      Alert.alert('PIN incorreto', 'O PIN digitado não está correto.');
+      setPinDigitado('');
+    }
+  };
+
+  // Função para capturar foto e registrar ponto
+  const capturarFotoERegistrarPonto = async () => {
+    if (cameraRef.current && tipoBatidaAtual) {
+      try {
+        setTimeout(async () => {
+          const photo = await cameraRef.current?.takePictureAsync({
+            quality: 0.4,
+            base64: false,
+          });
+
+          if (photo) {
+            setPhotoUri(photo.uri);
+            setCameraVisivel(false);
+
+            // Registrar a batida com a foto
+            await registrarBatida(tipoBatidaAtual, photo.uri);
+
+            // Resetar estados
+            setTipoBatidaAtual(null);
+            setPhotoUri(null);
+          }
+        }, 800);
+      } catch (e) {
+        setCameraVisivel(false);
+        setTipoBatidaAtual(null);
+        Alert.alert('Erro', 'Falha na captura da foto.');
+      }
+    }
+  };
+
+  // Função principal para registrar batida
+  const registrarBatida = async (tipo: BatidaTipo, photoUri?: string) => {
+    if (!funcionarioSelecionado || !empresa || !diaAtual) return;
+
     const novaBatida: Batida = {
       id: Date.now().toString(),
       tipo,
       timestamp: horaLocalISO(),
       funcionarioId: funcionarioSelecionado,
+      photoUri: photoUri || undefined,
     };
 
     const novoDia: Dia = {
@@ -247,6 +325,20 @@ export default function PontoScreen() {
     animarBotao();
     mostrarFeedback(tipo);
   };
+
+  // Lógica do teclado PIN
+  const handlePinPress = (num: string) => {
+    if (pinDigitado.length < 4) {
+      const novoPin = pinDigitado + num;
+      setPinDigitado(novoPin);
+
+      if (novoPin.length === 4) {
+        setTimeout(() => verificarPin(novoPin), 300);
+      }
+    }
+  };
+
+  const apagarUltimo = () => setPinDigitado(pinDigitado.slice(0, -1));
 
   const calcularTotalHorasDia = (batidas: Batida[]) => {
     if (!empresa) return 0;
@@ -313,31 +405,20 @@ export default function PontoScreen() {
     saida_final: 'Saída registrada!',
   };
 
-  const batidasFiltradas =
-    diaAtual?.batidas.filter(b => b.funcionarioId === funcionarioSelecionado) || [];
-
-  // Função para formatar a data no formato brasileiro
   const formatarData = (dataStr: string) => {
-  const [ano, mes, dia] = dataStr.split('-').map(Number);
-
-  const dataLocal = new Date(ano, mes - 1, dia);
-
-  return dataLocal.toLocaleDateString('pt-BR', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
-};
-
+    const [ano, mes, dia] = dataStr.split('-').map(Number);
+    const dataLocal = new Date(ano, mes - 1, dia);
+    return dataLocal.toLocaleDateString('pt-BR', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+  };
 
   const funcionarioAtual = funcionarios.find(f => f.id === funcionarioSelecionado);
-
-  // Obtém a meta diária do funcionário atual
-  const getMetaDiaria = () => {
-    if (!funcionarioAtual) return 0;
-    return funcionarioAtual.cargaDiariaHoras;
-  };
+  const batidasFiltradas = diaAtual?.batidas.filter(b => b.funcionarioId === funcionarioSelecionado) || [];
+  const getMetaDiaria = () => funcionarioAtual?.cargaDiariaHoras || 0;
 
   return (
     <View style={styles.container}>
@@ -378,6 +459,11 @@ export default function PontoScreen() {
                   <Text style={styles.funcionarioStatus}>
                     Carga diária: {item.cargaDiariaHoras}h • {item.diasSemana} dias/semana
                   </Text>
+                  {item.pin ? (
+                    <Text style={styles.pinInfo}>PIN cadastrado</Text>
+                  ) : (
+                    <Text style={styles.pinInfoAviso}>PIN não cadastrado</Text>
+                  )}
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="#999" />
               </TouchableOpacity>
@@ -396,6 +482,11 @@ export default function PontoScreen() {
                 <Text style={styles.funcionarioStatusAtivo}>
                   Carga diária: {funcionarioAtual?.cargaDiariaHoras}h • {funcionarioAtual?.diasSemana} dias/semana
                 </Text>
+                {funcionarioAtual?.pin ? (
+                  <Text style={styles.pinInfo}>PIN cadastrado</Text>
+                ) : (
+                  <Text style={styles.pinInfoAviso}>Sem PIN</Text>
+                )}
               </View>
               <TouchableOpacity
                 style={styles.btnTrocarFuncionario}
@@ -416,11 +507,10 @@ export default function PontoScreen() {
           </View>
         )}
 
-        {/* Botão de Bater Ponto - Aparece apenas quando empresa e funcionário estão selecionados */}
         {empresa && funcionarioSelecionado && (
           <Animated.View style={{ transform: [{ scale: animacaoPonto }] }}>
             <TouchableOpacity
-              onPress={baterPonto}
+              onPress={iniciarBaterPonto}
               activeOpacity={0.9}
             >
               <LinearGradient
@@ -431,13 +521,16 @@ export default function PontoScreen() {
               >
                 <View style={styles.btnPontoContent}>
                   <View style={styles.btnPontoIcon}>
-                    <Ionicons name="time-outline" size={32} color="#fff" />
+                    <Ionicons name="finger-print" size={32} color="#fff" />
                   </View>
                   <View style={styles.btnPontoTextContainer}>
                     <Text style={styles.btnPontoTitulo}>BATER PONTO</Text>
                     <Text style={styles.btnPontoSubtitulo}>
                       {proxTipo() ? rotuloBatida[proxTipo() as BatidaTipo] : 'Jornada Completa'}
                     </Text>
+                    {funcionarioAtual?.pin && (
+                      <Text style={styles.btnPontoPinInfo}>Será solicitado o PIN</Text>
+                    )}
                   </View>
                 </View>
               </LinearGradient>
@@ -466,6 +559,9 @@ export default function PontoScreen() {
                   <View style={styles.batidaInfo}>
                     <Text style={styles.batidaTipo}>{rotuloBatida[item.tipo]}</Text>
                     <Text style={styles.batidaHora}>{item.timestamp.slice(11, 16)}</Text>
+                    {item.photoUri && (
+                      <Text style={styles.batidaFotoInfo}>Com foto</Text>
+                    )}
                   </View>
                   <View style={styles.batidaStatus}>
                     <Ionicons name="checkmark-circle" size={20} color="#4CAF50" />
@@ -476,7 +572,7 @@ export default function PontoScreen() {
               showsVerticalScrollIndicator={false}
             />
 
-              <View style={styles.totalCard}>
+            <View style={styles.totalCard}>
               <Ionicons name="analytics-outline" size={24} color="#27ae60" />
               <View style={styles.totalInfo}>
                 <Text style={styles.totalLabel}>Total de horas hoje</Text>
@@ -491,7 +587,6 @@ export default function PontoScreen() {
                 </Text>
               </View>
             </View>
-          
           </>
         )}
 
@@ -505,6 +600,85 @@ export default function PontoScreen() {
           </View>
         )}
       </View>
+
+      {/* Modal de PIN */}
+      <Modal visible={modalPinVisivel} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitulo}>Digite seu PIN</Text>
+            <Text style={styles.modalSubtitulo}>Funcionário: {funcionarioAtual?.nome}</Text>
+
+            <View style={styles.dotsContainer}>
+              {[1, 2, 3, 4].map((i) => (
+                <View
+                  key={i}
+                  style={[styles.dot, pinDigitado.length >= i && styles.dotActive]}
+                />
+              ))}
+            </View>
+
+            <View style={styles.teclado}>
+              {[
+                ['1', '2', '3'],
+                ['4', '5', '6'],
+                ['7', '8', '9'],
+                ['C', '0', '⌫']
+              ].map((row, i) => (
+                <View key={i} style={styles.linhaTeclado}>
+                  {row.map((key) => (
+                    <TouchableOpacity
+                      key={key}
+                      style={[styles.tecla, (key === 'C' || key === '⌫') && styles.teclaEspecial]}
+                      onPress={() => {
+                        if (key === '⌫') apagarUltimo();
+                        else if (key === 'C') setPinDigitado('');
+                        else handlePinPress(key);
+                      }}
+                    >
+                      <Text style={styles.textoTecla}>{key}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              onPress={() => {
+                setModalPinVisivel(false);
+                setPinDigitado('');
+              }}
+              style={styles.btnFechar}
+            >
+              <Text style={styles.txtFechar}>CANCELAR</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal da Câmera */}
+      <Modal visible={cameraVisivel} animationType="fade">
+        <CameraView
+          style={styles.fullCamera}
+          facing="front"
+          ref={cameraRef}
+          onCameraReady={capturarFotoERegistrarPonto}
+        >
+          <View style={styles.cameraOverlay}>
+            <ActivityIndicator size="large" color="#fff" />
+            <Text style={styles.cameraText}>Processando Identificação...</Text>
+            <Text style={styles.cameraSubtitulo}>
+              {tipoBatidaAtual ? rotuloBatida[tipoBatidaAtual] : 'Registrando ponto'}
+            </Text>
+          </View>
+        </CameraView>
+      </Modal>
+
+      {/* Preview da última foto (opcional) */}
+      {photoUri && (
+        <View style={styles.previewContainer}>
+          <Image source={{ uri: photoUri }} style={styles.previewImage} />
+        </View>
+      )}
     </View>
   );
 }
@@ -614,6 +788,16 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#666',
   },
+  pinInfo: {
+    fontSize: 12,
+    color: '#27ae60',
+    marginTop: 2,
+  },
+  pinInfoAviso: {
+    fontSize: 12,
+    color: '#e74c3c',
+    marginTop: 2,
+  },
   funcionarioSelecionadoCard: {
     backgroundColor: '#fff',
     borderRadius: 16,
@@ -710,6 +894,11 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.9)',
     fontSize: 14,
   },
+  btnPontoPinInfo: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 12,
+    marginTop: 2,
+  },
   secaoTituloContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -767,6 +956,11 @@ const styles = StyleSheet.create({
   batidaHora: {
     fontSize: 14,
     color: '#666',
+  },
+  batidaFotoInfo: {
+    fontSize: 12,
+    color: '#27ae60',
+    marginTop: 2,
   },
   batidaStatus: {
     marginLeft: 10,
@@ -839,5 +1033,117 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#ccc',
     textAlign: 'center',
+  },
+  // Estilos do Modal PIN
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    padding: 25,
+    alignItems: 'center',
+    elevation: 20,
+  },
+  modalTitulo: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    marginBottom: 5,
+    color: '#333',
+  },
+  modalSubtitulo: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 20,
+  },
+  dotsContainer: {
+    flexDirection: 'row',
+    marginBottom: 30,
+  },
+  dot: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#2927B4',
+    marginHorizontal: 12,
+  },
+  dotActive: {
+    backgroundColor: '#2927B4',
+  },
+  teclado: {
+    width: '100%',
+  },
+  linhaTeclado: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 15,
+  },
+  tecla: {
+    width: 75,
+    height: 75,
+    borderRadius: 40,
+    backgroundColor: '#F0F2F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  teclaEspecial: {
+    backgroundColor: '#E0E4EB',
+  },
+  textoTecla: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#2927B4',
+  },
+  btnFechar: {
+    marginTop: 10,
+    padding: 15,
+  },
+  txtFechar: {
+    color: '#FF3B30',
+    fontWeight: 'bold',
+  },
+  // Estilos da Câmera
+  fullCamera: {
+    flex: 1,
+  },
+  cameraOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cameraText: {
+    color: '#fff',
+    marginTop: 20,
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  cameraSubtitulo: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 14,
+    marginTop: 10,
+  },
+  // Preview da foto
+  previewContainer: {
+    position: 'absolute',
+    bottom: 20,
+    right: 20,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  previewImage: {
+    width: 60,
+    height: 80,
+    borderRadius: 5,
   },
 });
