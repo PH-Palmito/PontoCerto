@@ -12,11 +12,15 @@ import {
   Animated,
   Switch,
   Dimensions,
+  Alert,
+  Share,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 
 type BatidaTipo = 'entrada' | 'saida_almoco' | 'retorno_almoco' | 'saida_final';
 
@@ -61,6 +65,7 @@ export default function HistoricoScreen() {
   const [horasEditando, setHorasEditando] = useState<Record<string, string>>({});
   const [filterStatus, setFilterStatus] = useState<'todos' | 'presente' | 'ausente' | 'folga'>('todos');
   const [resumoExpandido, setResumoExpandido] = useState(false);
+  const [exportando, setExportando] = useState(false);
 
   // Animações para o acordeão
   const alturaAnim = useRef(new Animated.Value(0)).current;
@@ -453,6 +458,439 @@ export default function HistoricoScreen() {
     }
   };
 
+  // ==================== FUNÇÕES DE EXPORTAÇÃO ====================
+
+  // FUNÇÃO PARA GERAR PDF
+  const gerarPDF = async () => {
+    try {
+      setExportando(true);
+
+      const funcionario = funcionarioSelecionado === 'todos'
+        ? null
+        : funcionarios.find(f => f.id === funcionarioSelecionado);
+
+      // Criar conteúdo HTML para o PDF
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>Relatório de Ponto</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              margin: 40px;
+              color: #333;
+            }
+            .header {
+              text-align: center;
+              margin-bottom: 30px;
+              border-bottom: 2px solid #2927B4;
+              padding-bottom: 20px;
+            }
+            .title {
+              color: #2927B4;
+              font-size: 28px;
+              margin-bottom: 10px;
+            }
+            .subtitle {
+              color: #666;
+              font-size: 18px;
+            }
+            .info-section {
+              margin-bottom: 30px;
+              background: #f8f9fa;
+              padding: 20px;
+              border-radius: 8px;
+            }
+            .info-row {
+              display: flex;
+              justify-content: space-between;
+              margin-bottom: 10px;
+            }
+            .info-label {
+              font-weight: bold;
+              color: #555;
+            }
+            .info-value {
+              color: #333;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              margin: 30px 0;
+              font-size: 14px;
+            }
+            th {
+              background-color: #2927B4;
+              color: white;
+              padding: 12px 8px;
+              text-align: left;
+              font-weight: bold;
+            }
+            td {
+              padding: 10px 8px;
+              border-bottom: 1px solid #ddd;
+            }
+            tr:nth-child(even) {
+              background-color: #f8f9fa;
+            }
+            .status-presente {
+              color: #4CAF50;
+              font-weight: bold;
+            }
+            .status-falta {
+              color: #e74c3c;
+              font-weight: bold;
+            }
+            .status-folga {
+              color: #2a9d8f;
+              font-weight: bold;
+            }
+            .total-section {
+              margin-top: 40px;
+              padding: 25px;
+              background-color: #e8f4fc;
+              border-radius: 10px;
+              border-left: 5px solid #3498db;
+            }
+            .footer {
+              margin-top: 50px;
+              text-align: center;
+              color: #666;
+              font-size: 12px;
+              border-top: 1px solid #ddd;
+              padding-top: 20px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1 class="title">RELATÓRIO DE PONTO</h1>
+            <h2 class="subtitle">${formatarMesAno(mesSelecionado)}</h2>
+          </div>
+
+          <div class="info-section">
+            <div class="info-row">
+              <span class="info-label">Período:</span>
+              <span class="info-value">${formatarMesAno(mesSelecionado)}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Funcionário:</span>
+              <span class="info-value">${funcionario ? funcionario.nome : 'Todos os Funcionários'}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Data de emissão:</span>
+              <span class="info-value">${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR')}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Carga horária diária:</span>
+              <span class="info-value">${funcionario ? (funcionario.cargaDiariaHoras || cargaDiariaPadrao) + 'h' : 'Varia por funcionário'}</span>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Dia</th>
+                ${funcionarioSelecionado === 'todos' ? '<th>Funcionário</th>' : ''}
+                <th>Entrada</th>
+                <th>Saída Almoço</th>
+                <th>Retorno</th>
+                <th>Saída</th>
+                <th>Total</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${diasComInfo.map(dia => {
+                if (funcionarioSelecionado === 'todos') {
+                  const batidasPorFuncionario: Record<string, Batida[]> = {};
+                  dia.batidas.forEach(b => {
+                    if (!batidasPorFuncionario[b.funcionarioId]) {
+                      batidasPorFuncionario[b.funcionarioId] = [];
+                    }
+                    batidasPorFuncionario[b.funcionarioId].push(b);
+                  });
+
+                  return Object.keys(batidasPorFuncionario).map(funcId => {
+                    const batidasFunc = batidasPorFuncionario[funcId];
+                    const entrada = batidasFunc.find(b => b.tipo === 'entrada');
+                    const saidaAlmoco = batidasFunc.find(b => b.tipo === 'saida_almoco');
+                    const retornoAlmoco = batidasFunc.find(b => b.tipo === 'retorno_almoco');
+                    const saidaFinal = batidasFunc.find(b => b.tipo === 'saida_final');
+                    const totalHoras = calcularTotalHorasDia(batidasFunc);
+
+                    const dataObj = new Date(dia.data);
+                    const diaSemana = dataObj.toLocaleDateString('pt-BR', { weekday: 'short' });
+
+                    return `
+                      <tr>
+                        <td>${dataObj.toLocaleDateString('pt-BR')}</td>
+                        <td>${diaSemana}</td>
+                        <td>${NomeFuncionario(funcId)}</td>
+                        <td>${entrada ? horaDeTimestamp(entrada.timestamp) : '-'}</td>
+                        <td>${saidaAlmoco ? horaDeTimestamp(saidaAlmoco.timestamp) : '-'}</td>
+                        <td>${retornoAlmoco ? horaDeTimestamp(retornoAlmoco.timestamp) : '-'}</td>
+                        <td>${saidaFinal ? horaDeTimestamp(saidaFinal.timestamp) : '-'}</td>
+                        <td>${formatarHoras(totalHoras)}</td>
+                        <td class="status-presente">PRESENTE</td>
+                      </tr>
+                    `;
+                  }).join('');
+                } else {
+                  const entrada = dia.batidas.find(b => b.tipo === 'entrada');
+                  const saidaAlmoco = dia.batidas.find(b => b.tipo === 'saida_almoco');
+                  const retornoAlmoco = dia.batidas.find(b => b.tipo === 'retorno_almoco');
+                  const saidaFinal = dia.batidas.find(b => b.tipo === 'saida_final');
+                  const totalHoras = calcularTotalHorasDia(dia.batidas);
+
+                  const dataObj = new Date(dia.data);
+                  const diaSemana = dataObj.toLocaleDateString('pt-BR', { weekday: 'short' });
+
+                  let status = 'PRESENTE';
+                  let statusClass = 'status-presente';
+
+                  if (dia.batidas.length === 0) {
+                    if (dia.registroOriginal?.folgas?.includes(funcionarioSelecionado)) {
+                      status = 'FOLGA';
+                      statusClass = 'status-folga';
+                    } else if (dia.registroOriginal?.fechado) {
+                      status = 'FECHADO';
+                      statusClass = 'status-folga';
+                    } else if (!ehDiaUtil(dia.data)) {
+                      status = 'FOLGA';
+                      statusClass = 'status-folga';
+                    } else {
+                      status = 'FALTA';
+                      statusClass = 'status-falta';
+                    }
+                  }
+
+                  return `
+                    <tr>
+                      <td>${dataObj.toLocaleDateString('pt-BR')}</td>
+                      <td>${diaSemana}</td>
+                      <td>${entrada ? horaDeTimestamp(entrada.timestamp) : '-'}</td>
+                      <td>${saidaAlmoco ? horaDeTimestamp(saidaAlmoco.timestamp) : '-'}</td>
+                      <td>${retornoAlmoco ? horaDeTimestamp(retornoAlmoco.timestamp) : '-'}</td>
+                      <td>${saidaFinal ? horaDeTimestamp(saidaFinal.timestamp) : '-'}</td>
+                      <td>${dia.batidas.length > 0 ? formatarHoras(totalHoras) : '-'}</td>
+                      <td class="${statusClass}">${status}</td>
+                    </tr>
+                  `;
+                }
+              }).join('')}
+            </tbody>
+          </table>
+
+          <div class="total-section">
+            <h2>RESUMO DO MÊS</h2>
+            ${funcionarioSelecionado === 'todos' ? `
+              <p><strong>Total de Funcionários:</strong> ${funcionarios.length}</p>
+              <p><strong>Faltas Registradas:</strong> ${faltasCount}</p>
+              <p><strong>Folgas Autorizadas:</strong> ${folgasCount}</p>
+              <p><strong>Dias com registro:</strong> ${diasComInfo.filter(d => d.temBatida).length}</p>
+            ` : `
+              <p><strong>Horas Trabalhadas:</strong> ${formatarHoras(trabalhadasHoras)}</p>
+              <p><strong>Horas Previstas:</strong> ${formatarHoras(previstasHoras)}</p>
+              <p><strong>Saldo de Horas:</strong> ${formatarHoras(saldoHoras)}</p>
+              <p><strong>Faltas:</strong> ${faltasCount}</p>
+              <p><strong>Folgas:</strong> ${folgasCount}</p>
+              <p><strong>Dias trabalhados:</strong> ${diasComInfo.filter(d => d.temBatida).length}</p>
+            `}
+          </div>
+
+          <div class="footer">
+            <p>Relatório gerado automaticamente pelo Sistema de Ponto</p>
+            <p>© ${new Date().getFullYear()} - Todos os direitos reservados</p>
+          </div>
+        </body>
+        </html>
+      `;
+
+      // Gerar o PDF
+      const { uri } = await Print.printToFileAsync({
+        html: htmlContent,
+        base64: false,
+      });
+
+      // Compartilhar o PDF
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: 'Exportar Relatório de Ponto',
+          UTI: 'com.adobe.pdf',
+        });
+      } else {
+        Alert.alert(
+          'PDF Gerado com Sucesso!',
+          `O relatório foi salvo em: ${uri}`,
+          [
+            {
+              text: 'OK',
+              onPress: () => console.log('PDF salvo em:', uri)
+            }
+          ]
+        );
+      }
+
+      setExportando(false);
+    } catch (error) {
+      console.error('Erro ao gerar PDF:', error);
+      Alert.alert('Erro', 'Não foi possível gerar o PDF. Verifique se as permissões estão corretas.');
+      setExportando(false);
+    }
+  };
+
+  // FUNÇÃO PARA GERAR CSV
+  const gerarCSV = async () => {
+    try {
+      setExportando(true);
+
+      const funcionario = funcionarioSelecionado === 'todos'
+        ? null
+        : funcionarios.find(f => f.id === funcionarioSelecionado);
+
+      let csvContent = 'Relatório de Ponto\n';
+      csvContent += `Período,${formatarMesAno(mesSelecionado)}\n`;
+      csvContent += `Funcionário,${funcionario ? funcionario.nome : 'Todos os Funcionários'}\n`;
+      csvContent += `Data de emissão,${new Date().toLocaleDateString('pt-BR')}\n\n`;
+
+      // Cabeçalho
+      if (funcionarioSelecionado === 'todos') {
+        csvContent += 'Data,Dia da Semana,Funcionário,Entrada,Saída Almoço,Retorno,Saída,Total,Status\n';
+      } else {
+        csvContent += 'Data,Dia da Semana,Entrada,Saída Almoço,Retorno,Saída,Total,Status\n';
+      }
+
+      // Dados
+      diasComInfo.forEach(dia => {
+        if (funcionarioSelecionado === 'todos') {
+          const batidasPorFuncionario: Record<string, Batida[]> = {};
+          dia.batidas.forEach(b => {
+            if (!batidasPorFuncionario[b.funcionarioId]) {
+              batidasPorFuncionario[b.funcionarioId] = [];
+            }
+            batidasPorFuncionario[b.funcionarioId].push(b);
+          });
+
+          Object.keys(batidasPorFuncionario).forEach(funcId => {
+            const batidasFunc = batidasPorFuncionario[funcId];
+            const entrada = batidasFunc.find(b => b.tipo === 'entrada');
+            const saidaAlmoco = batidasFunc.find(b => b.tipo === 'saida_almoco');
+            const retornoAlmoco = batidasFunc.find(b => b.tipo === 'retorno_almoco');
+            const saidaFinal = batidasFunc.find(b => b.tipo === 'saida_final');
+            const totalHoras = calcularTotalHorasDia(batidasFunc);
+
+            const dataObj = new Date(dia.data);
+            const diaSemana = dataObj.toLocaleDateString('pt-BR', { weekday: 'short' });
+
+            csvContent += `${dataObj.toLocaleDateString('pt-BR')},${diaSemana},${NomeFuncionario(funcId)},`;
+            csvContent += `${entrada ? horaDeTimestamp(entrada.timestamp) : '-'},`;
+            csvContent += `${saidaAlmoco ? horaDeTimestamp(saidaAlmoco.timestamp) : '-'},`;
+            csvContent += `${retornoAlmoco ? horaDeTimestamp(retornoAlmoco.timestamp) : '-'},`;
+            csvContent += `${saidaFinal ? horaDeTimestamp(saidaFinal.timestamp) : '-'},`;
+            csvContent += `${formatarHoras(totalHoras)},PRESENTE\n`;
+          });
+        } else {
+          const entrada = dia.batidas.find(b => b.tipo === 'entrada');
+          const saidaAlmoco = dia.batidas.find(b => b.tipo === 'saida_almoco');
+          const retornoAlmoco = dia.batidas.find(b => b.tipo === 'retorno_almoco');
+          const saidaFinal = dia.batidas.find(b => b.tipo === 'saida_final');
+          const totalHoras = calcularTotalHorasDia(dia.batidas);
+
+          const dataObj = new Date(dia.data);
+          const diaSemana = dataObj.toLocaleDateString('pt-BR', { weekday: 'short' });
+
+          let status = 'PRESENTE';
+          if (dia.batidas.length === 0) {
+            if (dia.registroOriginal?.folgas?.includes(funcionarioSelecionado)) {
+              status = 'FOLGA';
+            } else if (dia.registroOriginal?.fechado) {
+              status = 'FECHADO';
+            } else if (!ehDiaUtil(dia.data)) {
+              status = 'FOLGA';
+            } else {
+              status = 'FALTA';
+            }
+          }
+
+          csvContent += `${dataObj.toLocaleDateString('pt-BR')},${diaSemana},`;
+          csvContent += `${entrada ? horaDeTimestamp(entrada.timestamp) : '-'},`;
+          csvContent += `${saidaAlmoco ? horaDeTimestamp(saidaAlmoco.timestamp) : '-'},`;
+          csvContent += `${retornoAlmoco ? horaDeTimestamp(retornoAlmoco.timestamp) : '-'},`;
+          csvContent += `${saidaFinal ? horaDeTimestamp(saidaFinal.timestamp) : '-'},`;
+          csvContent += `${dia.batidas.length > 0 ? formatarHoras(totalHoras) : '-'},${status}\n`;
+        }
+      });
+
+      // Resumo
+      csvContent += `\nResumo do Mês\n`;
+      if (funcionarioSelecionado === 'todos') {
+        csvContent += `Total de Funcionários,${funcionarios.length}\n`;
+        csvContent += `Faltas Registradas,${faltasCount}\n`;
+        csvContent += `Folgas Autorizadas,${folgasCount}\n`;
+      } else {
+        csvContent += `Horas Trabalhadas,${formatarHoras(trabalhadasHoras)}\n`;
+        csvContent += `Horas Previstas,${formatarHoras(previstasHoras)}\n`;
+        csvContent += `Saldo de Horas,${formatarHoras(saldoHoras)}\n`;
+        csvContent += `Faltas,${faltasCount}\n`;
+        csvContent += `Folgas,${folgasCount}\n`;
+      }
+
+      // Salvar como arquivo
+      const htmlForCSV = `<pre>${csvContent}</pre>`;
+      const { uri } = await Print.printToFileAsync({
+        html: htmlForCSV,
+        base64: false,
+      });
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'text/csv',
+          dialogTitle: 'Exportar Relatório CSV',
+          UTI: 'public.comma-separated-values-text',
+        });
+      } else {
+        Alert.alert(
+          'CSV Gerado',
+          'O relatório CSV foi gerado com sucesso!',
+          [{ text: 'OK' }]
+        );
+      }
+
+      setExportando(false);
+    } catch (error) {
+      console.error('Erro ao gerar CSV:', error);
+      Alert.alert('Erro', 'Não foi possível gerar o CSV.');
+      setExportando(false);
+    }
+  };
+
+  // Menu de exportação
+  const mostrarMenuExportacao = () => {
+    Alert.alert(
+      'Exportar Relatório',
+      'Escolha o formato de exportação:',
+      [
+        {
+          text: 'PDF (Documento Formatado)',
+          onPress: gerarPDF
+        },
+        {
+          text: 'CSV (Excel/Planilha)',
+          onPress: gerarCSV
+        },
+        {
+          text: 'Cancelar',
+          style: 'cancel'
+        }
+      ]
+    );
+  };
+
   // Animação de rotação para o ícone do acordeão
   const rotacao = rotacaoAnim.interpolate({
     inputRange: [0, 1],
@@ -657,7 +1095,20 @@ export default function HistoricoScreen() {
         colors={['#2927B4', '#12114E']}
         style={styles.headerGradient}
       >
-        <Text style={styles.titulo}>Histórico</Text>
+        <View style={styles.headerRow}>
+          <Text style={styles.titulo}>Histórico</Text>
+          <TouchableOpacity
+            onPress={mostrarMenuExportacao}
+            style={styles.exportButton}
+            disabled={exportando}
+          >
+            {exportando ? (
+              <Ionicons name="refresh-outline" size={24} color="#fff" />
+            ) : (
+              <Ionicons name="download-outline" size={24} color="#fff" />
+            )}
+          </TouchableOpacity>
+        </View>
       </LinearGradient>
 
       <View style={styles.content}>
@@ -1052,11 +1503,22 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 5,
   },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   titulo: {
     fontSize: 28,
     fontWeight: 'bold',
     color: '#fff',
     textAlign: 'center',
+    flex: 1,
+  },
+  exportButton: {
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.2)',
   },
   content: {
     flex: 1,
@@ -1098,7 +1560,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 6,
     elevation: 3,
-    
+
   },
   navBtn: {
     padding: 8,
