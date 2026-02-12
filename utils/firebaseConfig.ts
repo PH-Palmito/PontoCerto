@@ -1,6 +1,8 @@
+// firebaseconfig.ts
 import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, enableIndexedDbPersistence } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
+import { getAuth } from "firebase/auth";
 
 // Suas credenciais oficiais
 const firebaseConfig = {
@@ -19,3 +21,12 @@ const app = initializeApp(firebaseConfig);
 // Exporta as instâncias dos serviços que vamos usar
 export const db = getFirestore(app);
 export const storage = getStorage(app);
+export const auth = getAuth(app);
+
+// Habilita persistência offline para Firestore
+try {
+  enableIndexedDbPersistence(db);
+  console.log("Persistência offline do Firestore habilitada");
+} catch (err) {
+  console.warn("Erro ao habilitar persistência offline:", err);
+}

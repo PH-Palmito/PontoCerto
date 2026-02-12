@@ -26,13 +26,13 @@ export default function TabLayout() {
           default: {},
         }),
       }}>
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Home',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
-        }}
-      />
+ <Tabs.Screen
+  name="home"
+  options={{
+    title: 'Ponto', 
+    tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
+  }}
+/>
       <Tabs.Screen
         name="registro"
         options={{
@@ -48,7 +48,7 @@ export default function TabLayout() {
         }}
       />
      <Tabs.Screen
-        name="cameraTestSreen"
+        name="testSreen"
         options={{
           title: 'camera',
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="chevron.left.forwardslash.chevron.right" color={color} />,
