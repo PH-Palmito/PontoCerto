@@ -8,7 +8,9 @@ import { signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthState
 import { doc, getDoc } from 'firebase/firestore';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { auth, db } from '../utils/firebaseConfig'; // Ajuste o caminho conforme necessário
+import { auth, db } from '../utils/firebaseConfig';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getStorageKeys } from '../utils/storage'; // Importe o utilitário
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -27,7 +29,14 @@ export default function LoginScreen() {
           const docSnap = await getDoc(docRef);
 
           if (docSnap.exists() && docSnap.data().empresa?.nome) {
-            // Tudo pronto -> Vai para o App
+            // Tudo pronto -> Carrega dados do Firestore para o AsyncStorage (opcional)
+            const data = docSnap.data();
+            const keys = getStorageKeys(user.uid);
+// depende do user.uid
+            if (data.empresa) await AsyncStorage.setItem(keys.empresa, JSON.stringify(data.empresa));
+            if (data.funcionarios) await AsyncStorage.setItem(keys.funcionarios, JSON.stringify(data.funcionarios));
+            if (data.feriados) await AsyncStorage.setItem(keys.feriados, JSON.stringify(data.feriados));
+            // Redireciona para o App
             router.replace('/(tabs)/registro');
           } else {
             // Falta configurar -> Vai para o Setup
@@ -56,8 +65,8 @@ export default function LoginScreen() {
         await createUserWithEmailAndPassword(auth, email, password);
       } else {
         await signInWithEmailAndPassword(auth, email, password);
+        // Após login, o onAuthStateChanged cuidará do redirecionamento e carregamento
       }
-      // Não precisamos fazer router.replace aqui, o useEffect faz sozinho!
     } catch (error: any) {
       console.error(error);
       let msg = error.message;

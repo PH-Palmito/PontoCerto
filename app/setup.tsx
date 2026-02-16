@@ -12,6 +12,17 @@ export default function SetupScreen() {
   const [adminPin, setAdminPin] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // MÁSCARA DE CNPJ
+  const formatarCNPJ = (text: string) => {
+    return text
+      .replace(/\D/g, '') // Remove tudo o que não é dígito
+      .replace(/^(\d{2})(\d)/, '$1.$2') // Coloca ponto após os dois primeiros dígitos
+      .replace(/^(\d{2})\.(\d{3})(\d)/, '$1.$2.$3') // Coloca ponto após os três próximos
+      .replace(/\.(\d{3})(\d)/, '.$1/$2') // Coloca barra após os três próximos
+      .replace(/(\d{4})(\d)/, '$1-$2') // Coloca traço antes dos dois últimos
+      .slice(0, 18); // Limita tamanho
+  };
+
   const finalizarSetup = async () => {
     if (!empresaNome || !adminPin) {
       return Alert.alert("Campos obrigatórios", "Preencha o nome da empresa e a senha administrativa.");
@@ -33,7 +44,7 @@ export default function SetupScreen() {
       const empresaDados = {
         id: user.uid,
         nome: empresaNome,
-        cnpj: cnpj,
+        cnpj: cnpj, // Salva formatado mesmo
         email: user.email,
         controleAlmoco: true,
         horaEntrada: "08:00",
@@ -49,16 +60,11 @@ export default function SetupScreen() {
         ultimaAtualizacao: new Date().toISOString()
       };
 
-      // 1. Salva no Firebase usando o UID do usuário como ID do documento
       await setDoc(doc(db, "empresas", user.uid), dadosCompletos);
-
-      // 2. Salva no LocalStorage para uso offline imediato
       await AsyncStorage.setItem('empresa', JSON.stringify(empresaDados));
       await AsyncStorage.setItem('funcionarios', '[]');
 
       Alert.alert("Sucesso", "Configuração concluída!");
-
-      // 3. Redireciona para o App
       router.replace('/(tabs)/home');
 
     } catch (e: any) {
@@ -79,7 +85,14 @@ export default function SetupScreen() {
       <TextInput style={styles.input} value={empresaNome} onChangeText={setEmpresaNome} placeholder="Ex: Padaria do João" />
 
       <Text style={styles.label}>CNPJ (Opcional)</Text>
-      <TextInput style={styles.input} value={cnpj} onChangeText={setCnpj} placeholder="00.000.000/0000-00" keyboardType="numeric" />
+      <TextInput
+        style={styles.input}
+        value={cnpj}
+        onChangeText={(t) => setCnpj(formatarCNPJ(t))}
+        placeholder="00.000.000/0000-00"
+        keyboardType="numeric"
+        maxLength={18}
+      />
 
       <Text style={styles.label}>Senha Admin (PIN) *</Text>
       <TextInput

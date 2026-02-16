@@ -1,8 +1,16 @@
-// firebaseconfig.ts
 import { initializeApp } from "firebase/app";
-import { getFirestore, enableIndexedDbPersistence } from "firebase/firestore";
+import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
-import { getAuth } from "firebase/auth";
+
+// 1. Importações de Autenticação
+import {
+  initializeAuth,
+  getAuth,
+  // @ts-ignore: Ignora erro de tipagem caso a versão do TS não encontre a definição
+  getReactNativePersistence
+} from "firebase/auth";
+
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // Suas credenciais oficiais
 const firebaseConfig = {
@@ -15,18 +23,24 @@ const firebaseConfig = {
   measurementId: "G-ZM8XWD00EB"
 };
 
-// Inicializa o Firebase
+// Inicializa o App
 const app = initializeApp(firebaseConfig);
 
-// Exporta as instâncias dos serviços que vamos usar
-export const db = getFirestore(app);
-export const storage = getStorage(app);
-export const auth = getAuth(app);
+// 2. Inicializa Auth com persistência e tipagem 'any' para evitar bloqueios
+let auth: any;
 
-// Habilita persistência offline para Firestore
 try {
-  enableIndexedDbPersistence(db);
-  console.log("Persistência offline do Firestore habilitada");
-} catch (err) {
-  console.warn("Erro ao habilitar persistência offline:", err);
+  // Tenta inicializar a persistência com AsyncStorage
+  auth = initializeAuth(app, {
+    persistence: getReactNativePersistence(AsyncStorage)
+  });
+} catch (e) {
+  // Se falhar (ex: já inicializado no hot-reload), pega a instância existente
+  auth = getAuth(app);
 }
+
+// Inicializa banco e storage
+const db = getFirestore(app);
+const storage = getStorage(app);
+
+export { auth, db, storage };
