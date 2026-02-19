@@ -102,14 +102,15 @@ export default function HistoricoScreen() {
         const ordenados = parsed.sort((a, b) => (a.data < b.data ? 1 : -1));
         setDias(ordenados);
 
-        const mesesFromData = Array.from(
-          new Set(
-            ordenados.map(d => {
-              const date = new Date(d.data);
-              return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-            })
-          )
-        );
+       const mesesFromData = Array.from(
+       new Set(
+        ordenados.map(d => {
+      const [ano, mes] = d.data.split('-');
+      return `${ano}-${mes}`;
+    })
+    )
+    );
+
 
         const hoje = new Date();
         const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`;
@@ -266,18 +267,23 @@ export default function HistoricoScreen() {
     return lista;
   };
 
-  const ehDiaUtil = (dataISO: string) => {
-    const d = new Date(dataISO).getDay();
-    return d !== 0 && d !== 6;
-  };
+    const ehDiaUtil = (dataISO: string) => {
+  const [ano, mes, dia] = dataISO.split('-').map(Number);
+  const d = new Date(ano, mes - 1, dia).getDay();
+  return d !== 0 && d !== 6;
+};
 
-  const isFuture = (dataISO: string) => {
-    const hoje = new Date();
-    hoje.setHours(0, 0, 0, 0);
-    const data = new Date(dataISO);
-    data.setHours(0, 0, 0, 0);
-    return data > hoje;
-  };
+const isFuture = (dataISO: string) => {
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+
+  const [ano, mes, dia] = dataISO.split('-').map(Number);
+  const data = new Date(ano, mes - 1, dia);
+  data.setHours(0, 0, 0, 0);
+
+  return data > hoje;
+};
+ 
 
   const todosDiasDoMes = gerarDiasDoMes(mesSelecionado);
 

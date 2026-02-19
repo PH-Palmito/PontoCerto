@@ -18,16 +18,26 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from '../../utils/firebaseConfig';
+import { getStorageKeys } from '../../utils/storage';
+import { getFirestore, doc, setDoc, collection } from 'firebase/firestore';
+import { app } from '../../utils/firebaseConfig';
+
+import NetInfo from '@react-native-community/netinfo';
 
 type BatidaTipo = 'entrada' | 'saida_almoco' | 'retorno_almoco' | 'saida_final';
+
+import { uploadFotoBatida } from '../../utils/uploadFotoBatida';
 
 type Batida = {
   id: string;
   tipo: BatidaTipo;
   timestamp: string;
   funcionarioId: string;
-  photoUri?: string;
+  fotoUrl?: string | null;
 };
+
 
 type Dia = {
   data: string;
@@ -61,6 +71,7 @@ type Empresa = {
 
 const { width } = Dimensions.get('window');
 
+
 export default function PontoScreen() {
   const [dias, setDias] = useState<Dia[]>([]);
   const [diaAtual, setDiaAtual] = useState<Dia | null>(null);
@@ -78,17 +89,68 @@ export default function PontoScreen() {
 
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
+  const [uid, setUid] = useState<string | null>(null);
+const db = getFirestore(app);
+const [isOnline, setIsOnline] = useState(false);
 
   // Ciclo de carregamento corrigido para respeitar a hierarquia de dados
-  useEffect(() => {
-    inicializarDados();
-  }, []);
 
-  useFocusEffect(
-    useCallback(() => {
-      inicializarDados();
-    }, [])
-  );
+
+  useEffect(() => {
+  if (uid) {
+    inicializarDados();
+  }
+}, [uid]);
+
+useEffect(() => {
+  const unsub = onAuthStateChanged(auth, user => {
+    setUid(user?.uid ?? null);
+  });
+  return unsub;
+}, []);
+useEffect(() => {
+  const unsubscribe = NetInfo.addEventListener(state => {
+    setIsOnline(!!state.isConnected);
+  });
+
+  return unsubscribe;
+}, []);
+
+useEffect(() => {
+  if (isOnline && dias.length > 0) {
+    sincronizarTudo();
+  }
+}, [isOnline, dias]);
+
+const sincronizarDiaFirestore = async (dia: Dia) => {
+  if (!uid) return;
+
+  try {
+    const diaRef = doc(db, 'empresas', uid, 'dias', dia.data);
+
+    await setDoc(diaRef, {
+      data: dia.data,
+      batidas: dia.batidas,
+      updatedAt: new Date()
+    });
+
+  } catch (error) {
+    console.error('Erro ao sincronizar com Firestore:', error);
+  }
+};
+
+
+const sincronizarTudo = async () => {
+  if (!uid) return;
+
+  try {
+    for (const dia of dias) {
+      await sincronizarDiaFirestore(dia);
+    }
+  } catch (error) {
+    console.error('Erro ao sincronizar:', error);
+  }
+};
 
   const inicializarDados = async () => {
     const empresaCarregada = await carregarEmpresa();
@@ -100,7 +162,10 @@ export default function PontoScreen() {
 
   const carregarEmpresa = async (): Promise<Empresa | null> => {
     try {
-      const dados = await AsyncStorage.getItem('empresa');
+      if (!uid) return null;
+const keys = getStorageKeys(uid);
+const dados = await AsyncStorage.getItem(keys.empresa);
+
       if (dados) {
         const empresaSalva = JSON.parse(dados);
         if (empresaSalva.controleAlmoco === undefined) {
@@ -118,8 +183,10 @@ export default function PontoScreen() {
 
   const carregarFuncionarios = async (empresaId: string) => {
     try {
-      const chaveDinamica = `funcionarios_${empresaId}`;
-      const dados = await AsyncStorage.getItem(chaveDinamica);
+     if (!uid) return;
+const keys = getStorageKeys(uid);
+const dados = await AsyncStorage.getItem(keys.funcionarios);
+
       if (dados) {
         const funcionariosCarregados = JSON.parse(dados);
         const funcionariosComPin = funcionariosCarregados.map((func: any) => ({
@@ -135,36 +202,62 @@ export default function PontoScreen() {
     }
   };
 
-  const carregarDias = async (empresaId: string) => {
-    try {
-      const chaveDias = `dias_${empresaId}`;
-      const dados = await AsyncStorage.getItem(chaveDias);
-      const hoje = hojeString();
+ const carregarDias = async (empresaId: string) => {
+  try {
+    if (!uid) return;
 
-      if (dados) {
-        const parsed: Dia[] = JSON.parse(dados);
-        setDias(parsed);
-        const diaEncontrado = parsed.find(d => d.data === hoje);
-        setDiaAtual(diaEncontrado || { data: hoje, batidas: [] });
-      } else {
-        setDiaAtual({ data: hoje, batidas: [] });
+    const keys = getStorageKeys(uid);
+    const dados = await AsyncStorage.getItem(keys.dias);
+    const hoje = hojeString();
+
+    if (dados) {
+      const parsed: Dia[] = JSON.parse(dados);
+      setDias(parsed);
+
+      let diaEncontrado = parsed.find(d => d.data === hoje);
+
+      if (!diaEncontrado) {
+        diaEncontrado = { data: hoje, batidas: [] };
+        const atualizados = [diaEncontrado, ...parsed];
+        await AsyncStorage.setItem(keys.dias, JSON.stringify(atualizados));
+        setDias(atualizados);
       }
-    } catch (error) {
-      console.error('Erro ao carregar dias:', error);
+
+      setDiaAtual(diaEncontrado);
+    } else {
+      const novoDia = { data: hoje, batidas: [] };
+      await AsyncStorage.setItem(keys.dias, JSON.stringify([novoDia]));
+      setDias([novoDia]);
+      setDiaAtual(novoDia);
     }
-  };
+  } catch (error) {
+    console.error('Erro ao carregar dias:', error);
+  }
+};
+
 
   const salvarDias = async (novosDias: Dia[]) => {
-    if (!empresa) return;
-    const hoje = hojeString();
-    const chaveDias = `dias_${empresa.id}`;
+  if (!empresa || !uid) return;
 
-    await AsyncStorage.setItem(chaveDias, JSON.stringify(novosDias));
-    setDias(novosDias);
+  const keys = getStorageKeys(uid);
 
-    const diaAtualizado = novosDias.find(d => d.data === hoje) || { data: hoje, batidas: [] };
-    setDiaAtual(diaAtualizado);
-  };
+  await AsyncStorage.setItem(keys.dias, JSON.stringify(novosDias));
+  setDias(novosDias);
+
+  const hoje = hojeString();
+  const diaAtualizado =
+    novosDias.find(d => d.data === hoje) || { data: hoje, batidas: [] };
+
+  setDiaAtual(diaAtualizado);
+ if (isOnline) {
+  await sincronizarDiaFirestore(diaAtualizado);
+}
+
+
+}
+
+
+
 
   const hojeString = () => {
     const data = new Date();
@@ -247,29 +340,39 @@ export default function PontoScreen() {
       }
     }
   };
+const registrarBatida = async (tipo: BatidaTipo, photoUri?: string) => {
+  if (!funcionarioSelecionado || !empresa || !diaAtual) return;
 
-  const registrarBatida = async (tipo: BatidaTipo, photoUri?: string) => {
-    if (!funcionarioSelecionado || !empresa || !diaAtual) return;
+  let fotoUrl: string | null = null;
 
-    const novaBatida: Batida = {
-      id: Date.now().toString(),
-      tipo,
-      timestamp: horaLocalISO(),
-      funcionarioId: funcionarioSelecionado,
+  if (photoUri) {
+    fotoUrl = await uploadFotoBatida(
       photoUri,
-    };
+      empresa.id,
+      funcionarioSelecionado
+    );
+  }
 
-    const novoDia: Dia = {
-      ...diaAtual,
-      batidas: [...diaAtual.batidas, novaBatida],
-    };
-
-    const novosDias = [novoDia, ...dias.filter(d => d.data !== diaAtual.data)];
-    await salvarDias(novosDias);
-
-    animarBotao();
-    mostrarFeedback(tipo);
+  const novaBatida: Batida = {
+    id: Date.now().toString(),
+    tipo: tipo,
+    timestamp: new Date().toISOString(),
+    funcionarioId: funcionarioSelecionado,
+    fotoUrl: fotoUrl
   };
+
+  const novoDia: Dia = {
+    ...diaAtual,
+    batidas: [...diaAtual.batidas, novaBatida],
+  };
+
+  const novosDias = [novoDia, ...dias.filter(d => d.data !== diaAtual.data)];
+  await salvarDias(novosDias);
+
+  animarBotao();
+  mostrarFeedback(tipo);
+};
+
 
   const animarBotao = () => {
     Animated.sequence([

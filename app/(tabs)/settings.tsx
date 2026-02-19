@@ -363,6 +363,7 @@ const carregarFeriados = async (uid: string) => {
 
             }
             await signOut(auth);
+            await AsyncStorage.clear();
             router.replace("/");
           } catch (error) {
             Alert.alert("Erro", "Não foi possível desconectar.");
