@@ -14,6 +14,7 @@ import {
   Dimensions,
   Alert,
   Share,
+  Image,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,11 +22,11 @@ import { Picker } from '@react-native-picker/picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system';
 import { auth } from '../../utils/firebaseConfig';
 import { getStorageKeys } from '../../utils/storage';
-import { useFocusEffect } from 'expo-router'; // Import necessário
+import { useFocusEffect } from 'expo-router';
 import { onAuthStateChanged } from 'firebase/auth';
-
 
 type BatidaTipo = 'entrada' | 'saida_almoco' | 'retorno_almoco' | 'saida_final';
 
@@ -34,6 +35,7 @@ type Batida = {
   tipo: BatidaTipo;
   timestamp: string;
   funcionarioId: string;
+  photoUri?: string;
 };
 
 type Dia = {
@@ -72,16 +74,22 @@ export default function HistoricoScreen() {
   const [resumoExpandido, setResumoExpandido] = useState(false);
   const [exportando, setExportando] = useState(false);
 
+  // Estados para o modal de foto ampliada (agora com info do funcionário)
+  const [fotoInfo, setFotoInfo] = useState<{ uri: string; funcionarioId: string } | null>(null);
+  const [modalFotoVisivel, setModalFotoVisivel] = useState(false);
+
   const alturaAnim = useRef(new Animated.Value(0)).current;
   const rotacaoAnim = useRef(new Animated.Value(0)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const cargaDiariaPadrao = 8;
   const [uid, setUid] = useState<string | null>(null);
+  // Adicione junto aos outros states
+  const [empresa, setEmpresa] = useState<any>(null);
 
   // ========== FUNÇÃO DE CARREGAMENTO (memoizada) ==========
   const carregarDados = useCallback(async () => {
     if (!uid) return;
-  const keys = getStorageKeys(uid);
+    const keys = getStorageKeys(uid);
 
     const dadosDias = await AsyncStorage.getItem(keys.dias);
     const dadosFuncionarios = await AsyncStorage.getItem(keys.funcionarios);
@@ -102,15 +110,14 @@ export default function HistoricoScreen() {
         const ordenados = parsed.sort((a, b) => (a.data < b.data ? 1 : -1));
         setDias(ordenados);
 
-       const mesesFromData = Array.from(
-       new Set(
-        ordenados.map(d => {
-      const [ano, mes] = d.data.split('-');
-      return `${ano}-${mes}`;
-    })
-    )
-    );
-
+        const mesesFromData = Array.from(
+          new Set(
+            ordenados.map(d => {
+              const [ano, mes] = d.data.split('-');
+              return `${ano}-${mes}`;
+            })
+          )
+        );
 
         const hoje = new Date();
         const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`;
@@ -138,7 +145,7 @@ export default function HistoricoScreen() {
       setMesesDisponiveis([mesAtual]);
       setMesSelecionado(mesAtual);
     }
-  }, [uid]); // sem dependências externas, pois auth.currentUser é verificado dentro
+  }, [uid]);
 
   // Carrega na montagem inicial
   useEffect(() => {
@@ -176,11 +183,11 @@ export default function HistoricoScreen() {
   }, [resumoExpandido]);
 
   useEffect(() => {
-  const unsub = onAuthStateChanged(auth, user => {
-    setUid(user?.uid ?? null);
-  });
-  return unsub;
-}, []);
+    const unsub = onAuthStateChanged(auth, user => {
+      setUid(user?.uid ?? null);
+    });
+    return unsub;
+  }, []);
 
   const formatarMesAno = (mesAno: string) => {
     if (!mesAno) return '';
@@ -267,23 +274,22 @@ export default function HistoricoScreen() {
     return lista;
   };
 
-    const ehDiaUtil = (dataISO: string) => {
-  const [ano, mes, dia] = dataISO.split('-').map(Number);
-  const d = new Date(ano, mes - 1, dia).getDay();
-  return d !== 0 && d !== 6;
-};
+  const ehDiaUtil = (dataISO: string) => {
+    const [ano, mes, dia] = dataISO.split('-').map(Number);
+    const d = new Date(ano, mes - 1, dia).getDay();
+    return d !== 0 && d !== 6;
+  };
 
-const isFuture = (dataISO: string) => {
-  const hoje = new Date();
-  hoje.setHours(0, 0, 0, 0);
+  const isFuture = (dataISO: string) => {
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
 
-  const [ano, mes, dia] = dataISO.split('-').map(Number);
-  const data = new Date(ano, mes - 1, dia);
-  data.setHours(0, 0, 0, 0);
+    const [ano, mes, dia] = dataISO.split('-').map(Number);
+    const data = new Date(ano, mes - 1, dia);
+    data.setHours(0, 0, 0, 0);
 
-  return data > hoje;
-};
- 
+    return data > hoje;
+  };
 
   const todosDiasDoMes = gerarDiasDoMes(mesSelecionado);
 
@@ -477,13 +483,136 @@ const isFuture = (dataISO: string) => {
     }
   };
 
-  // Funções de exportação (versões simplificadas, apenas para não quebrar)
-  const gerarPDF = async () => {
-    Alert.alert('PDF', 'Funcionalidade em desenvolvimento.');
-  };
+  // ===== FUNÇÃO DE EXPORTAÇÃO CSV =====
   const gerarCSV = async () => {
-    Alert.alert('CSV', 'Funcionalidade em desenvolvimento.');
+    if (diasComInfo.length === 0) {
+      return Alert.alert("Aviso", "Não há dados para exportar neste mês.");
+    }
+
+    setExportando(true);
+    try {
+      const cabecalho = "Data;Funcionário;Registro;Horário;Total Horas Dia\n";
+      const nomeFunc = funcionarioSelecionado === 'todos' ? 'Todos' : NomeFuncionario(funcionarioSelecionado);
+
+      const linhas = diasComInfo.map(dia => {
+        if (!dia.temBatida) {
+          return `${formatarDataSimples(dia.data)};${nomeFunc};Sem Registro;;0h 0min`;
+        }
+        return dia.batidas.map(b => {
+          return `${formatarDataSimples(dia.data)};${NomeFuncionario(b.funcionarioId)};${rotuloBatida[b.tipo]};${horaDeTimestamp(b.timestamp)};${formatarHoras(calcularTotalHorasDia(dia.batidas))}`;
+        }).join('\n');
+      }).join('\n');
+
+      const csvCompleto = cabecalho + linhas;
+
+      // @ts-ignore - cacheDirectory existe em runtime
+      const baseDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+      if (!baseDir) throw new Error("Diretório não disponível");
+
+      const fileName = `Relatorio_Ponto_${mesSelecionado}.csv`;
+      const fileUri = baseDir + fileName;
+
+      // @ts-ignore - EncodingType existe, mas o tipo pode não ser reconhecido
+      await FileSystem.writeAsStringAsync(fileUri, "\uFEFF" + csvCompleto, {
+        encoding: 'utf8',
+      });
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri);
+      } else {
+        Alert.alert("Erro", "Compartilhamento não disponível neste dispositivo.");
+      }
+    } catch (error) {
+      console.error("Erro ao gerar CSV:", error);
+      Alert.alert("Erro", "Não foi possível gerar a planilha.");
+    } finally {
+      setExportando(false);
+    }
   };
+
+  // Função de exportação PDF
+  const gerarPDF = async () => {
+    if (diasComInfo.length === 0) {
+      return Alert.alert("Aviso", "Não há dados para gerar o PDF.");
+    }
+
+    setExportando(true);
+    try {
+      const nomeEmpresa = empresa?.nome || "Minha Empresa";
+      const nomeFunc = funcionarioSelecionado === 'todos' ? 'Relatório Geral' : NomeFuncionario(funcionarioSelecionado);
+
+      // Gerar as linhas da tabela em HTML
+      const linhasHtml = diasComInfo.map(dia => {
+        const totalDia = dia.temBatida ? formatarHoras(calcularTotalHorasDia(dia.batidas)) : "---";
+        const status = !dia.temBatida ? `<span style="color: red; font-weight: bold;">FALTA</span>` : "Presente";
+
+        // Detalhar as batidas do dia
+        const detalhesBatidas = dia.batidas.length > 0
+          ? dia.batidas.map(b => `${rotuloBatida[b.tipo]}: ${horaDeTimestamp(b.timestamp)}`).join('<br>')
+          : status;
+
+        return `
+          <tr>
+            <td style="border: 1px solid #ddd; padding: 8px;">${formatarDataSimples(dia.data)}</td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${detalhesBatidas}</td>
+            <td style="border: 1px solid #ddd; padding: 8px; text-align: center;">${totalDia}</td>
+          </tr>
+        `;
+      }).join('');
+
+      const htmlContent = `
+        <html>
+          <head>
+            <style>
+              body { font-family: 'Helvetica', sans-serif; padding: 20px; color: #333; }
+              h1 { color: #2927B4; text-align: center; }
+              .header-info { margin-bottom: 20px; border-bottom: 2px solid #2927B4; padding-bottom: 10px; }
+              table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+              th { background-color: #2927B4; color: white; padding: 10px; text-align: left; }
+              .footer { margin-top: 30px; text-align: center; font-size: 12px; color: #666; }
+            </style>
+          </head>
+          <body>
+            <h1>Relatório de Ponto</h1>
+            <div class="header-info">
+              <p><strong>Empresa:</strong> ${nomeEmpresa}</p>
+              <p><strong>Colaborador:</strong> ${nomeFunc}</p>
+              <p><strong>Período:</strong> ${formatarMesAno(mesSelecionado)}</p>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Registros</th>
+                  <th>Total do Dia</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${linhasHtml}
+              </tbody>
+            </table>
+            <div class="footer">
+              <p>Gerado automaticamente pelo PontoCerto em ${new Date().toLocaleDateString('pt-BR')}</p>
+            </div>
+          </body>
+        </html>
+      `;
+
+      // Gerar o arquivo PDF
+      const { uri } = await Print.printToFileAsync({ html: htmlContent });
+
+      // Compartilhar o arquivo
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf' });
+      }
+    } catch (error) {
+      console.error("Erro ao gerar PDF:", error);
+      Alert.alert("Erro", "Falha ao gerar o documento PDF.");
+    } finally {
+      setExportando(false);
+    }
+  };
+
   const mostrarMenuExportacao = () => {
     Alert.alert(
       'Exportar',
@@ -512,146 +641,146 @@ const isFuture = (dataISO: string) => {
     const fechado = reg?.fechado ?? false;
     const folgasDoRegistro = reg?.folgas ?? [];
 
+    // Determinar status para funcionário específico (usado no card individual)
     let statusLabel: { text: string; color?: string } | null = null;
 
-    if (futuro) {
-      if (fechado) {
-        statusLabel = { text: 'Fechado (autorizado)', color: '#999' };
-      } else if (funcionarioSelecionado !== 'todos' &&
-        folgasDoRegistro.includes(funcionarioSelecionado)) {
-        statusLabel = { text: 'Folga autorizada', color: '#999' };
-      } else {
-        statusLabel = { text: 'Futuro', color: '#666' };
-      }
-    } else {
-      if (item.temBatida) {
-        statusLabel = null;
-      } else if (fechado) {
-        statusLabel = { text: 'Estabelecimento fechado', color: '#555' };
-      } else if (funcionarioSelecionado !== 'todos') {
-        const folgaAuto = folgasDoRegistro.includes(funcionarioSelecionado);
-
-        if (folgaAuto) {
+    if (!futuro && funcionarioSelecionado !== 'todos') {
+      if (!item.temBatida) {
+        if (fechado) {
+          statusLabel = { text: 'Estabelecimento fechado', color: '#555' };
+        } else if (folgasDoRegistro.includes(funcionarioSelecionado)) {
           statusLabel = { text: 'Folga autorizada', color: '#2a9d8f' };
         } else if (!ehDiaUtil(item.data)) {
-          statusLabel = { text: 'Folga (fim de semana)', color: '#555' };
+          statusLabel = { text: 'Folga (FDS)', color: '#555' };
         } else if (!antesDaAdmissao(item.data, funcionarioSelecionado)) {
           statusLabel = { text: 'FALTA', color: '#e74c3c' };
-        } else {
-          statusLabel = null;
-        }
-      } else {
-        if (folgasDoRegistro.length > 0) {
-          statusLabel = { text: `Folgas autorizadas (${folgasDoRegistro.length})`, color: '#2a9d8f' };
-        } else if (ehDiaUtil(item.data)) {
-          let faltasCount = 0;
-          funcionarios.forEach(func => {
-            if (!antesDaAdmissao(item.data, func.id) && !item.batidas.some(b => b.funcionarioId === func.id)) {
-              faltasCount++;
-            }
-          });
-
-          if (faltasCount > 0) {
-            statusLabel = { text: `Faltas: ${faltasCount} funcionário(s)`, color: '#e74c3c' };
-          } else {
-            statusLabel = { text: 'Todos presentes', color: '#4CAF50' };
-          }
-        } else {
-          statusLabel = { text: 'Folga (fim de semana)', color: '#555' };
         }
       }
+    } else if (futuro) {
+      statusLabel = { text: 'Futuro', color: '#666' };
     }
 
+    // ========== CARD PARA "TODOS OS FUNCIONÁRIOS" ==========
     if (funcionarioSelecionado === 'todos') {
-      const funcionariosComBatida = new Set(item.batidas.map(b => b.funcionarioId));
-      const totalFuncionarios = funcionarios.length;
-      const presentes = funcionariosComBatida.size;
-      const folgasAutorizadas = folgasDoRegistro.length;
+      // Calcular indicadores do dia
+      const infoDia = (() => {
+        const funcionariosComBatida = new Set(
+          (reg?.batidas ?? []).map(b => b.funcionarioId)
+        );
 
-      let faltas = 0;
-      if (ehDiaUtil(item.data) && !fechado) {
-        funcionarios.forEach(func => {
-          if (antesDaAdmissao(item.data, func.id)) return;
-          if (folgasDoRegistro.includes(func.id)) return;
-          if (!funcionariosComBatida.has(func.id)) {
+        let presentes = 0,
+          faltas = 0,
+          folgasCount = 0;
+
+        funcionarios.forEach(f => {
+          if (antesDaAdmissao(item.data, f.id)) return;
+          if (fechado) return; // estabelecimento fechado: ninguém é considerado presente/falta
+
+          if (funcionariosComBatida.has(f.id)) {
+            presentes++;
+          } else if (folgasDoRegistro.includes(f.id)) {
+            folgasCount++;
+          } else if (ehDiaUtil(item.data)) {
             faltas++;
+          } else {
+            // fim de semana sem batida = folga
+            folgasCount++;
           }
         });
+
+        return { presentes, faltas, folgasCount, fechado };
+      })();
+
+      // Definir cor de fundo/borda com base no status do dia (fechado ou falta)
+      let borderColor = '#f0f0f0';
+      let backgroundColor = '#fff';
+      if (infoDia.fechado) {
+        borderColor = '#2a9d8f';
+        backgroundColor = '#d0f0e8';
+      } else if (infoDia.faltas > 0 && infoDia.presentes === 0 && infoDia.folgasCount === 0) {
+        // Se todo mundo faltou (exceto admitidos depois)
+        borderColor = '#e74c3c';
+        backgroundColor = '#fee';
+      } else if (infoDia.faltas > 0) {
+        // Pelo menos uma falta, mas não todos
+        borderColor = '#e74c3c';
+        backgroundColor = '#fff5f5';
       }
 
       return (
-        <View style={styles.card}>
+        <View style={[styles.card, { borderColor, backgroundColor }]}>
           <View style={styles.cardHeader}>
             <Text style={styles.data}>{formatarDataSimples(item.data)}</Text>
-            {statusLabel && (
-              <View style={[styles.statusBadge, { backgroundColor: `${statusLabel.color}15` }]}>
-                <Text style={[styles.statusText, { color: statusLabel.color }]}>{statusLabel.text}</Text>
+            {futuro && (
+              <View style={[styles.statusBadge, { backgroundColor: '#66620' }]}>
+                <Text style={[styles.statusText, { color: '#666' }]}>Futuro</Text>
+              </View>
+            )}
+            {!futuro && infoDia.fechado && (
+              <View style={[styles.statusBadge, { backgroundColor: '#2a9d8f20' }]}>
+                <Text style={[styles.statusText, { color: '#2a9d8f' }]}>Fechado</Text>
               </View>
             )}
           </View>
 
-          <View style={styles.resumoContainer}>
-            <View style={styles.resumoItem}>
-              <Ionicons name="people-outline" size={16} color="#666" />
-              <Text style={styles.resumoLabel}>Total:</Text>
-              <Text style={styles.resumoValor}>{totalFuncionarios}</Text>
+          <View style={styles.resumoLinha}>
+            <View style={styles.resumoItemPequeno}>
+              <Ionicons name="people-outline" size={16} color="#2927B4" />
+              <Text style={styles.resumoTexto}>{funcionarios.length} func.</Text>
             </View>
-
-            {presentes > 0 && (
-              <View style={styles.resumoItem}>
-                <Ionicons name="checkmark-circle-outline" size={16} color="#4CAF50" />
-                <Text style={[styles.resumoLabel, { color: '#4CAF50' }]}>Presentes:</Text>
-                <Text style={[styles.resumoValor, { color: '#4CAF50' }]}>{presentes}</Text>
-              </View>
-            )}
-
-            {folgasAutorizadas > 0 && (
-              <View style={styles.resumoItem}>
-                <Ionicons name="calendar-outline" size={16} color="#2a9d8f" />
-                <Text style={[styles.resumoLabel, { color: '#2a9d8f' }]}>Folgas:</Text>
-                <Text style={[styles.resumoValor, { color: '#2a9d8f' }]}>{folgasAutorizadas}</Text>
-              </View>
-            )}
-
-            {faltas > 0 && (
-              <View style={styles.resumoItem}>
-                <Ionicons name="close-circle-outline" size={16} color="#e74c3c" />
-                <Text style={[styles.resumoLabel, { color: '#e74c3c' }]}>Faltas:</Text>
-                <Text style={[styles.resumoValor, { color: '#e74c3c' }]}>{faltas}</Text>
-              </View>
-            )}
+            <View style={styles.resumoItemPequeno}>
+              <Ionicons name="checkmark-circle-outline" size={16} color="#4CAF50" />
+              <Text style={styles.resumoTexto}>{infoDia.presentes} presentes</Text>
+            </View>
+            <View style={styles.resumoItemPequeno}>
+              <Ionicons name="close-circle-outline" size={16} color="#e74c3c" />
+              <Text style={styles.resumoTexto}>{infoDia.faltas} faltas</Text>
+            </View>
+            <View style={styles.resumoItemPequeno}>
+              <Ionicons name="calendar-outline" size={16} color="#2a9d8f" />
+              <Text style={styles.resumoTexto}>{infoDia.folgasCount} folgas</Text>
+            </View>
           </View>
 
-          <TouchableOpacity
-            style={[styles.btnConfigurar, isFuture(item.data) && styles.btnDesabilitado]}
-            onPress={() => {
-              const registro = dias.find((d) => d.data === item.data) ||
-                ({ data: item.data, batidas: [], folgas: [], fechado: false } as Dia);
-              abrirModalComRegistro(registro);
-            }}
-            disabled={isFuture(item.data)}
-          >
-            <Ionicons name="settings-outline" size={16} color="#fff" />
-            <Text style={styles.btnConfigurarTexto}>Configurar dia</Text>
-          </TouchableOpacity>
+          {item.temBatida && (
+            <TouchableOpacity
+              style={styles.btnVerDetalhes}
+              onPress={() => abrirModalComRegistro(reg || { data: item.data, batidas: [], folgas: [], fechado: false } as Dia)}
+            >
+              <Text style={styles.btnVerDetalhesTexto}>Ver detalhes</Text>
+              <Ionicons name="arrow-forward" size={16} color="#2927B4" />
+            </TouchableOpacity>
+          )}
         </View>
       );
     }
 
+    // ========== CARD PARA FUNCIONÁRIO ESPECÍFICO ==========
     const batidasParaRenderizar = item.batidas;
+
+    // Determinar cor de fundo/borda com base no status
+    let cardBorderColor = '#f0f0f0';
+    let cardBackgroundColor = '#fff';
+
+    if (statusLabel) {
+      if (statusLabel.text === 'FALTA') {
+        cardBorderColor = '#e74c3c';
+        cardBackgroundColor = '#fee';
+      } else if (statusLabel.text === 'Folga autorizada' || statusLabel.text === 'Estabelecimento fechado') {
+        cardBorderColor = '#2a9d8f';
+        cardBackgroundColor = '#d0f0e8';
+      } else if (statusLabel.text === 'Folga (FDS)') {
+        cardBorderColor = '#2a9d8f';
+        cardBackgroundColor = '#e8f8f5';
+      }
+    }
 
     return (
       <TouchableOpacity
-        style={styles.card}
-        onPress={() => {
-          if (isFuture(item.data) && funcionarioSelecionado !== 'todos') {
-            return;
-          }
-          const registro = dias.find((d) => d.data === item.data) ||
-            ({ data: item.data, batidas: [], folgas: [], fechado: false } as Dia);
-          abrirModalComRegistro(registro);
-        }}
+        style={[styles.card, { borderColor: cardBorderColor, backgroundColor: cardBackgroundColor }]}
+        onPress={() => abrirModalComRegistro(reg || { data: item.data, batidas: [], folgas: [], fechado: false } as Dia)}
         activeOpacity={0.7}
+        disabled={futuro}
       >
         <View style={styles.cardHeader}>
           <Text style={styles.data}>{formatarDataSimples(item.data)}</Text>
@@ -673,19 +802,29 @@ const isFuture = (dataISO: string) => {
                   <Text style={styles.batidaTipo}>{rotuloBatida[b.tipo]}</Text>
                   <Text style={styles.batidaHora}>{horaDeTimestamp(b.timestamp)}</Text>
                 </View>
+
+                {/* FOTO COM AMPLIAÇÃO AO CLICAR */}
+                {b.photoUri && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      setFotoInfo({ uri: b.photoUri!, funcionarioId: b.funcionarioId });
+                      setModalFotoVisivel(true);
+                    }}
+                  >
+                    <Image
+                      source={{ uri: b.photoUri }}
+                      style={{ width: 45, height: 45, borderRadius: 8, marginLeft: 10 }}
+                    />
+                  </TouchableOpacity>
+                )}
               </View>
             ))}
-
             <View style={styles.totalContainer}>
-              <Ionicons name="time-outline" size={16} color="#666" />
-              <Text style={styles.totalText}>
-                Total: {formatarHoras(calcularTotalHorasDia(batidasParaRenderizar))}
-              </Text>
+              <Text style={styles.totalText}>Total: {formatarHoras(calcularTotalHorasDia(batidasParaRenderizar))}</Text>
             </View>
           </>
         ) : (
           <View style={styles.semBatidas}>
-            <Ionicons name="time-outline" size={24} color="#ddd" />
             <Text style={styles.semBatidasTexto}>Sem registros</Text>
           </View>
         )}
@@ -1070,6 +1209,38 @@ const isFuture = (dataISO: string) => {
           </View>
         </View>
       </Modal>
+
+      {/* Modal de Foto Ampliada com cabeçalho de auditoria */}
+      <Modal
+        visible={modalFotoVisivel}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setModalFotoVisivel(false)}
+      >
+        <View style={styles.modalFotoOverlay}>
+          {/* Cabeçalho fixo com informações de auditoria */}
+          <View style={styles.fotoHeader}>
+            <View style={styles.fotoHeaderContent}>
+              <Text style={styles.fotoHeaderNome}>
+                {fotoInfo ? NomeFuncionario(fotoInfo.funcionarioId) : 'Funcionário'}
+              </Text>
+              <Text style={styles.fotoHeaderFrase}>Registro Auditado via GPS e Hora Oficial</Text>
+            </View>
+            <TouchableOpacity onPress={() => setModalFotoVisivel(false)}>
+              <Ionicons name="close-circle" size={32} color="#fff" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Imagem ampliada */}
+          {fotoInfo && (
+            <Image
+              source={{ uri: fotoInfo.uri }}
+              style={styles.fotoEmTelaCheia}
+              resizeMode="contain"
+            />
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1243,7 +1414,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 6,
     elevation: 3,
-    borderWidth: 1,
+    borderWidth: 2, // Aumentado para dar destaque à borda condicional
     borderColor: '#f0f0f0',
   },
   cardHeader: {
@@ -1266,43 +1437,37 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  resumoContainer: {
-    marginBottom: 15,
+  resumoLinha: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
   },
-  resumoItem: {
+  resumoItemPequeno: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 6,
+    gap: 4,
   },
-  resumoLabel: {
-    fontSize: 14,
-    color: '#666',
-    marginLeft: 8,
-    marginRight: 6,
-  },
-  resumoValor: {
-    fontSize: 14,
-    fontWeight: '600',
+  resumoTexto: {
+    fontSize: 12,
     color: '#2c3e50',
   },
-  btnConfigurar: {
+  btnVerDetalhes: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#2927B4',
-    padding: 12,
-    borderRadius: 10,
-    marginTop: 8,
+    marginTop: 12,
+    padding: 8,
+    backgroundColor: '#f0f0ff',
+    borderRadius: 8,
   },
-  btnConfigurarTexto: {
-    color: '#fff',
+  btnVerDetalhesTexto: {
     fontSize: 14,
+    color: '#2927B4',
+    marginRight: 4,
     fontWeight: '600',
-    marginLeft: 8,
-  },
-  btnDesabilitado: {
-    backgroundColor: '#cccccc',
-    opacity: 0.6,
   },
   batidaItem: {
     flexDirection: 'row',
@@ -1597,5 +1762,43 @@ const styles = StyleSheet.create({
     color: '#e74c3c',
     fontSize: 16,
     fontWeight: '600',
+  },
+  // Estilos para o modal de foto
+  modalFotoOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fotoEmTelaCheia: {
+    width: width * 0.9,
+    height: width * 1.2,
+    borderRadius: 15,
+  },
+  fotoHeader: {
+    position: 'absolute',
+    top: 40,
+    left: 20,
+    right: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    padding: 12,
+    borderRadius: 30,
+    zIndex: 20,
+  },
+  fotoHeaderContent: {
+    flex: 1,
+  },
+  fotoHeaderNome: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  fotoHeaderFrase: {
+    color: '#ddd',
+    fontSize: 12,
+    marginTop: 2,
   },
 });

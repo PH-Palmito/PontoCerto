@@ -17,7 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { signOut, onAuthStateChanged } from "firebase/auth";
-
+import * as Location from "expo-location"; // NOVO
 
 import { doc, setDoc } from "firebase/firestore";
 import { auth, db } from "../../utils/firebaseConfig";
@@ -51,6 +51,9 @@ type Empresa = {
   horaSaidaFinal: string;
   cargaHorariaPadrao: number;
   senhaAdmin?: string;
+  // NOVOS CAMPOS DE LOCALIZAÇÃO
+  latitude?: number;
+  longitude?: number;
 };
 
 type Feriado = {
@@ -209,15 +212,11 @@ const HolidayUtils = {
     ];
   },
 };
-const handleLogout = async () => {
-  await signOut(auth);
-  await AsyncStorage.clear();
-};
+
 export default function Settings() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const [uid, setUid] = useState<string | null>(null);
-
 
   // Estados UI
   const [secaoExpandida, setSecaoExpandida] = useState<
@@ -273,55 +272,56 @@ export default function Settings() {
   }, [params.novoCadastro]);
 
   // EFEITO: Carrega dados iniciais
-useEffect(() => {
-  if (!uid) return;
-  carregarDados(uid);
-}, [uid]);
+  useEffect(() => {
+    if (!uid) return;
+    carregarDados(uid);
+  }, [uid]);
 
-useEffect(() => {
-  const unsub = onAuthStateChanged(auth, user => {
-    setUid(user?.uid ?? null);
-  });
-  return unsub;
-}, []);
-if (!uid) {
-  return (
-    <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-      <ActivityIndicator size="large" />
-    </View>
-  );
-}
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, user => {
+      setUid(user?.uid ?? null);
+    });
+    return unsub;
+  }, []);
 
-const carregarDados = async (uid: string) => {
-  try {
-    const keys = getStorageKeys(uid);
-
-    const dadosEmpresa = await AsyncStorage.getItem(keys.empresa);
-    if (dadosEmpresa) setEmpresa(JSON.parse(dadosEmpresa));
-
-    const dadosFunc = await AsyncStorage.getItem(keys.funcionarios);
-    setFuncionarios(dadosFunc ? JSON.parse(dadosFunc) : []);
-
-    await carregarFeriados(uid);
-  } catch (e) {
-    console.error(e);
+  if (!uid) {
+    return (
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+        <ActivityIndicator size="large" />
+      </View>
+    );
   }
-};
 
-const carregarFeriados = async (uid: string) => {
-  const anoAtual = new Date().getFullYear();
-  const nacionais = HolidayUtils.getFeriadosNacionais(anoAtual);
+  const carregarDados = async (uid: string) => {
+    try {
+      const keys = getStorageKeys(uid);
 
-  const keys = getStorageKeys(uid);
-  const dadosCustom = await AsyncStorage.getItem(keys.feriados);
-  const customizados = dadosCustom ? JSON.parse(dadosCustom) : [];
+      const dadosEmpresa = await AsyncStorage.getItem(keys.empresa);
+      if (dadosEmpresa) setEmpresa(JSON.parse(dadosEmpresa));
 
-  setFeriados([...nacionais, ...customizados].sort((a, b) =>
-    a.data.localeCompare(b.data)
-  ));
-};
+      const dadosFunc = await AsyncStorage.getItem(keys.funcionarios);
+      setFuncionarios(dadosFunc ? JSON.parse(dadosFunc) : []);
 
-  // ========== NOVA FUNÇÃO DE SINCRONIZAÇÃO (recebe dados atualizados) ==========
+      await carregarFeriados(uid);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const carregarFeriados = async (uid: string) => {
+    const anoAtual = new Date().getFullYear();
+    const nacionais = HolidayUtils.getFeriadosNacionais(anoAtual);
+
+    const keys = getStorageKeys(uid);
+    const dadosCustom = await AsyncStorage.getItem(keys.feriados);
+    const customizados = dadosCustom ? JSON.parse(dadosCustom) : [];
+
+    setFeriados([...nacionais, ...customizados].sort((a, b) =>
+      a.data.localeCompare(b.data)
+    ));
+  };
+
+  // ========== SINCRONIZAÇÃO ==========
   const syncToFirestore = async (
     empresaData: Empresa,
     funcionariosData: Funcionario[],
@@ -358,10 +358,6 @@ const carregarFeriados = async (uid: string) => {
         style: "destructive",
         onPress: async () => {
           try {
-            if (auth.currentUser) {
-
-
-            }
             await signOut(auth);
             await AsyncStorage.clear();
             router.replace("/");
@@ -381,6 +377,27 @@ const carregarFeriados = async (uid: string) => {
       setSenhaInput("");
     } else {
       Alert.alert("Acesso Negado", "Senha incorreta.");
+    }
+  };
+
+  // ========== CAPTURA DE LOCALIZAÇÃO (NOVO) ==========
+  const capturarLocalizacaoEmpresa = async () => {
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Erro", "Permissão de localização negada.");
+      return;
+    }
+
+    try {
+      const local = await Location.getCurrentPositionAsync({});
+      setEmpresa({
+        ...empresa,
+        latitude: local.coords.latitude,
+        longitude: local.coords.longitude,
+      });
+      Alert.alert("Sucesso", "Localização da sede definida com sucesso!");
+    } catch (error) {
+      Alert.alert("Erro", "Não foi possível obter a localização.");
     }
   };
 
@@ -447,7 +464,6 @@ const carregarFeriados = async (uid: string) => {
     const lista = funcionarios.filter((f) => f.id !== id);
     if (!uid) return;
     const keys = getStorageKeys(uid);
-
     await AsyncStorage.setItem(keys.funcionarios, JSON.stringify(lista));
     setFuncionarios(lista);
     await syncToFirestore(empresa, lista, feriados);
@@ -460,7 +476,6 @@ const carregarFeriados = async (uid: string) => {
     );
     if (!uid) return;
     const keys = getStorageKeys(uid);
-
     await AsyncStorage.setItem(keys.funcionarios, JSON.stringify(lista));
     setFuncionarios(lista);
     setModalVisivel(false);
@@ -485,11 +500,9 @@ const carregarFeriados = async (uid: string) => {
     if (!uid) return;
     const keys = getStorageKeys(uid);
     await AsyncStorage.setItem(keys.feriados, JSON.stringify(novaListaCustom));
-    // Recarrega feriados para incluir os nacionais + atualizados
-    await carregarFeriados(uid); // atualiza o estado feriados
+    await carregarFeriados(uid);
     setNovoFeriadoNome("");
     setNovoFeriadoData("");
-    // Após carregar, o estado feriados já contém a lista completa
     await syncToFirestore(empresa, funcionarios, feriados);
   };
 
@@ -507,7 +520,7 @@ const carregarFeriados = async (uid: string) => {
       if (!uid) return;
       const keys = getStorageKeys(uid);
       await AsyncStorage.setItem(keys.feriados, JSON.stringify(final));
-      await carregarFeriados(uid); // atualiza o estado feriados
+      await carregarFeriados(uid);
       await syncToFirestore(empresa, funcionarios, feriados);
       Alert.alert("Sucesso", "Feriados importados!");
     }
@@ -520,7 +533,7 @@ const carregarFeriados = async (uid: string) => {
     if (!uid) return;
     const keys = getStorageKeys(uid);
     await AsyncStorage.setItem(keys.feriados, JSON.stringify(custom));
-    await carregarFeriados(uid); // atualiza o estado feriados
+    await carregarFeriados(uid);
     await syncToFirestore(empresa, funcionarios, feriados);
   };
 
@@ -769,6 +782,23 @@ const carregarFeriados = async (uid: string) => {
               }
             />
           </View>
+
+          {/* NOVO BOTÃO DE LOCALIZAÇÃO */}
+          <TouchableOpacity
+            style={[styles.botaoAdicionar, { backgroundColor: "#3498db", marginTop: 10 }]}
+            onPress={capturarLocalizacaoEmpresa}
+          >
+            <Ionicons name="location-outline" size={20} color="#fff" />
+            <Text style={styles.botaoAdicionarTexto}>
+              {empresa.latitude ? "ATUALIZAR SEDE (GPS)" : "DEFINIR LOCAL DA LOJA (GPS)"}
+            </Text>
+          </TouchableOpacity>
+          {empresa.latitude && (
+            <Text style={{ fontSize: 11, color: "#27ae60", textAlign: "center", marginTop: 5 }}>
+              Localização salva via GPS
+            </Text>
+          )}
+
           <Text style={styles.label}>Segurança</Text>
           <Text style={{ fontSize: 12, color: "#666", marginBottom: 5 }}>
             Esta senha protege esta tela de configurações.
@@ -1186,5 +1216,5 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
 
-  btnLogoutText: { color: "#fff", fontWeight: "bold", fontSize: 16 }, // Corrigido o nome da propriedade
+  btnLogoutText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
 });

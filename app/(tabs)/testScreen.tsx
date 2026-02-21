@@ -18,26 +18,25 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Location from 'expo-location';
+import * as FileSystem from 'expo-file-system';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '../../utils/firebaseConfig';
 import { getStorageKeys } from '../../utils/storage';
-import { getFirestore, doc, setDoc, collection } from 'firebase/firestore';
+import { getFirestore, doc, setDoc } from 'firebase/firestore';
 import { app } from '../../utils/firebaseConfig';
-
 import NetInfo from '@react-native-community/netinfo';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 type BatidaTipo = 'entrada' | 'saida_almoco' | 'retorno_almoco' | 'saida_final';
-
-import { uploadFotoBatida } from '../../utils/uploadFotoBatida';
 
 type Batida = {
   id: string;
   tipo: BatidaTipo;
   timestamp: string;
   funcionarioId: string;
-  fotoUrl?: string | null;
+  photoUri?: string;
 };
-
 
 type Dia = {
   data: string;
@@ -67,10 +66,12 @@ type Empresa = {
   horaAlmocoSugeridaFim?: string;
   horaSaidaFinal: string;
   cargaHorariaPadrao: number;
+  latitude?: number;
+  longitude?: number;
+  raioPermitido?: number;
 };
 
 const { width } = Dimensions.get('window');
-
 
 export default function PontoScreen() {
   const [dias, setDias] = useState<Dia[]>([]);
@@ -87,70 +88,90 @@ export default function PontoScreen() {
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [tipoBatidaAtual, setTipoBatidaAtual] = useState<BatidaTipo | null>(null);
 
+  // 🔹 Controle de processamento para evitar múltiplos toques
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // 🔹 Animação do feedback de confirmação
+  const [feedbackAnim] = useState(new Animated.Value(0));
+
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [uid, setUid] = useState<string | null>(null);
-const db = getFirestore(app);
-const [isOnline, setIsOnline] = useState(false);
+  const db = getFirestore(app);
+  const [isOnline, setIsOnline] = useState(false);
+  const [locationPermission, setLocationPermission] = useState<boolean | null>(null);
 
-  // Ciclo de carregamento corrigido para respeitar a hierarquia de dados
+  const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Ciclo de carregamento
+  useEffect(() => {
+    if (uid) {
+      inicializarDados();
+    }
+  }, [uid]);
 
   useEffect(() => {
-  if (uid) {
-    inicializarDados();
-  }
-}, [uid]);
-
-useEffect(() => {
-  const unsub = onAuthStateChanged(auth, user => {
-    setUid(user?.uid ?? null);
-  });
-  return unsub;
-}, []);
-useEffect(() => {
-  const unsubscribe = NetInfo.addEventListener(state => {
-    setIsOnline(!!state.isConnected);
-  });
-
-  return unsubscribe;
-}, []);
-
-useEffect(() => {
-  if (isOnline && dias.length > 0) {
-    sincronizarTudo();
-  }
-}, [isOnline, dias]);
-
-const sincronizarDiaFirestore = async (dia: Dia) => {
-  if (!uid) return;
-
-  try {
-    const diaRef = doc(db, 'empresas', uid, 'dias', dia.data);
-
-    await setDoc(diaRef, {
-      data: dia.data,
-      batidas: dia.batidas,
-      updatedAt: new Date()
+    const unsub = onAuthStateChanged(auth, user => {
+      setUid(user?.uid ?? null);
     });
+    return unsub;
+  }, []);
 
-  } catch (error) {
-    console.error('Erro ao sincronizar com Firestore:', error);
-  }
-};
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener(state => {
+      setIsOnline(!!state.isConnected);
+    });
+    return unsubscribe;
+  }, []);
 
-
-const sincronizarTudo = async () => {
-  if (!uid) return;
-
-  try {
-    for (const dia of dias) {
-      await sincronizarDiaFirestore(dia);
+  // Ao ficar online, sincroniza dados e fotos pendentes
+  useEffect(() => {
+    if (isOnline && dias.length > 0) {
+      sincronizarTudo();
+      sincronizarFotosPendentes();
     }
-  } catch (error) {
-    console.error('Erro ao sincronizar:', error);
-  }
-};
+  }, [isOnline, dias]);
+
+  useEffect(() => {
+    (async () => {
+      const { status } = await Location.getForegroundPermissionsAsync();
+      setLocationPermission(status === 'granted');
+    })();
+  }, []);
+
+  // Limpeza do timeout ao desmontar
+  useEffect(() => {
+    return () => {
+      if (resetTimeoutRef.current) {
+        clearTimeout(resetTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const sincronizarDiaFirestore = async (dia: Dia) => {
+    if (!uid) return;
+    try {
+      const diaRef = doc(db, 'empresas', uid, 'dias', dia.data);
+      await setDoc(diaRef, {
+        data: dia.data,
+        batidas: dia.batidas,
+        updatedAt: new Date()
+      });
+    } catch (error) {
+      console.error('Erro ao sincronizar com Firestore:', error);
+    }
+  };
+
+  const sincronizarTudo = async () => {
+    if (!uid) return;
+    try {
+      for (const dia of dias) {
+        await sincronizarDiaFirestore(dia);
+      }
+    } catch (error) {
+      console.error('Erro ao sincronizar:', error);
+    }
+  };
 
   const inicializarDados = async () => {
     const empresaCarregada = await carregarEmpresa();
@@ -163,9 +184,8 @@ const sincronizarTudo = async () => {
   const carregarEmpresa = async (): Promise<Empresa | null> => {
     try {
       if (!uid) return null;
-const keys = getStorageKeys(uid);
-const dados = await AsyncStorage.getItem(keys.empresa);
-
+      const keys = getStorageKeys(uid);
+      const dados = await AsyncStorage.getItem(keys.empresa);
       if (dados) {
         const empresaSalva = JSON.parse(dados);
         if (empresaSalva.controleAlmoco === undefined) {
@@ -183,10 +203,9 @@ const dados = await AsyncStorage.getItem(keys.empresa);
 
   const carregarFuncionarios = async (empresaId: string) => {
     try {
-     if (!uid) return;
-const keys = getStorageKeys(uid);
-const dados = await AsyncStorage.getItem(keys.funcionarios);
-
+      if (!uid) return;
+      const keys = getStorageKeys(uid);
+      const dados = await AsyncStorage.getItem(keys.funcionarios);
       if (dados) {
         const funcionariosCarregados = JSON.parse(dados);
         const funcionariosComPin = funcionariosCarregados.map((func: any) => ({
@@ -202,62 +221,53 @@ const dados = await AsyncStorage.getItem(keys.funcionarios);
     }
   };
 
- const carregarDias = async (empresaId: string) => {
-  try {
-    if (!uid) return;
+  const carregarDias = async (empresaId: string) => {
+    try {
+      if (!uid) return;
+      const keys = getStorageKeys(uid);
+      const dados = await AsyncStorage.getItem(keys.dias);
+      const hoje = hojeString();
 
-    const keys = getStorageKeys(uid);
-    const dados = await AsyncStorage.getItem(keys.dias);
-    const hoje = hojeString();
+      if (dados) {
+        const parsed: Dia[] = JSON.parse(dados);
+        setDias(parsed);
 
-    if (dados) {
-      const parsed: Dia[] = JSON.parse(dados);
-      setDias(parsed);
+        let diaEncontrado = parsed.find(d => d.data === hoje);
 
-      let diaEncontrado = parsed.find(d => d.data === hoje);
+        if (!diaEncontrado) {
+          diaEncontrado = { data: hoje, batidas: [] };
+          const atualizados = [diaEncontrado, ...parsed];
+          await AsyncStorage.setItem(keys.dias, JSON.stringify(atualizados));
+          setDias(atualizados);
+        }
 
-      if (!diaEncontrado) {
-        diaEncontrado = { data: hoje, batidas: [] };
-        const atualizados = [diaEncontrado, ...parsed];
-        await AsyncStorage.setItem(keys.dias, JSON.stringify(atualizados));
-        setDias(atualizados);
+        setDiaAtual(diaEncontrado);
+      } else {
+        const novoDia = { data: hoje, batidas: [] };
+        await AsyncStorage.setItem(keys.dias, JSON.stringify([novoDia]));
+        setDias([novoDia]);
+        setDiaAtual(novoDia);
       }
-
-      setDiaAtual(diaEncontrado);
-    } else {
-      const novoDia = { data: hoje, batidas: [] };
-      await AsyncStorage.setItem(keys.dias, JSON.stringify([novoDia]));
-      setDias([novoDia]);
-      setDiaAtual(novoDia);
+    } catch (error) {
+      console.error('Erro ao carregar dias:', error);
     }
-  } catch (error) {
-    console.error('Erro ao carregar dias:', error);
-  }
-};
-
+  };
 
   const salvarDias = async (novosDias: Dia[]) => {
-  if (!empresa || !uid) return;
+    if (!empresa || !uid) return;
+    const keys = getStorageKeys(uid);
+    await AsyncStorage.setItem(keys.dias, JSON.stringify(novosDias));
+    setDias(novosDias);
 
-  const keys = getStorageKeys(uid);
+    const hoje = hojeString();
+    const diaAtualizado =
+      novosDias.find(d => d.data === hoje) || { data: hoje, batidas: [] };
 
-  await AsyncStorage.setItem(keys.dias, JSON.stringify(novosDias));
-  setDias(novosDias);
-
-  const hoje = hojeString();
-  const diaAtualizado =
-    novosDias.find(d => d.data === hoje) || { data: hoje, batidas: [] };
-
-  setDiaAtual(diaAtualizado);
- if (isOnline) {
-  await sincronizarDiaFirestore(diaAtualizado);
-}
-
-
-}
-
-
-
+    setDiaAtual(diaAtualizado);
+    if (isOnline) {
+      await sincronizarDiaFirestore(diaAtualizado);
+    }
+  };
 
   const hojeString = () => {
     const data = new Date();
@@ -288,8 +298,104 @@ const dados = await AsyncStorage.getItem(keys.funcionarios);
     return null;
   };
 
+  const calcularDistancia = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371e3; // metros
+    const φ1 = lat1 * Math.PI / 180;
+    const φ2 = lat2 * Math.PI / 180;
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+              Math.cos(φ1) * Math.cos(φ2) *
+              Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
+  };
+
+  // Busca a hora oficial da internet (Brasília/Bahia)
+  const obterHoraOficial = async (): Promise<string | null> => {
+    try {
+      const response = await fetch('https://worldtimeapi.org/api/timezone/America/Bahia');
+      const data = await response.json();
+      return data.datetime.slice(0, 19);
+    } catch (error) {
+      console.warn('Erro ao buscar hora oficial:', error);
+      return null;
+    }
+  };
+
+  // Upload de imagem para o Firebase Storage
+  const uploadImageParaFirebase = async (uri: string, funcionarioId: string): Promise<string | null> => {
+    try {
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      const storage = getStorage(app);
+      const fileName = `pontos/${funcionarioId}_${Date.now()}.jpg`;
+      const storageRef = ref(storage, fileName);
+
+      await uploadBytes(storageRef, blob);
+      const downloadUrl = await getDownloadURL(storageRef);
+      return downloadUrl;
+    } catch (error) {
+      console.error('Erro no upload da imagem:', error);
+      return null;
+    }
+  };
+
+  // Sincroniza fotos pendentes (locais) para a nuvem e apaga localmente
+  const sincronizarFotosPendentes = async () => {
+    if (!uid || !diaAtual) return;
+
+    const batidasComFotoLocal = diaAtual.batidas.filter(
+      b => b.photoUri && !b.photoUri.startsWith('http')
+    );
+
+    if (batidasComFotoLocal.length === 0) return;
+
+    let houveAlteracao = false;
+    const novasBatidas = [...diaAtual.batidas];
+
+    for (let i = 0; i < novasBatidas.length; i++) {
+      const batida = novasBatidas[i];
+      if (batida.photoUri && !batida.photoUri.startsWith('http')) {
+        const urlNuvem = await uploadImageParaFirebase(batida.photoUri, batida.funcionarioId);
+        if (urlNuvem) {
+          // Remove o arquivo local após upload bem-sucedido
+          await FileSystem.deleteAsync(batida.photoUri, { idempotent: true });
+          // Atualiza a batida com a URL da nuvem
+          novasBatidas[i] = { ...batida, photoUri: urlNuvem };
+          houveAlteracao = true;
+        }
+      }
+    }
+
+    if (houveAlteracao) {
+      const novoDia = { ...diaAtual, batidas: novasBatidas };
+      const novosDias = [novoDia, ...dias.filter(d => d.data !== diaAtual.data)];
+      await salvarDias(novosDias);
+    }
+  };
+
+  // Reset automático do totem após registro
+  const resetarTotem = () => {
+    if (resetTimeoutRef.current) {
+      clearTimeout(resetTimeoutRef.current);
+    }
+    resetTimeoutRef.current = setTimeout(() => {
+      setFuncionarioSelecionado(null);
+      setPinDigitado('');
+      setIsProcessing(false); // 🔹 Importante: liberar processamento
+      resetTimeoutRef.current = null;
+    }, 3000);
+  };
+
   const iniciarBaterPonto = async () => {
     if (!funcionarioSelecionado || !empresa) return;
+    if (isProcessing) {
+      Alert.alert('Aguarde', 'Processando registro anterior...');
+      return;
+    }
 
     const tipo = proxTipo();
     if (!tipo) {
@@ -308,6 +414,7 @@ const dados = await AsyncStorage.getItem(keys.funcionarios);
         const { status } = await requestPermission();
         if (status !== 'granted') return Alert.alert('Aviso', 'Acesso à câmera negado.');
       }
+      setIsProcessing(true);  // 🔹 Inicia processamento
       setCameraVisivel(true);
     }
   };
@@ -316,6 +423,7 @@ const dados = await AsyncStorage.getItem(keys.funcionarios);
     const funcionario = funcionarios.find(f => f.id === funcionarioSelecionado);
     if (funcionario?.pin === pin) {
       setModalPinVisivel(false);
+      setIsProcessing(true);  // 🔹 Inicia processamento
       setCameraVisivel(true);
     } else {
       Alert.alert('Erro', 'PIN incorreto.');
@@ -333,46 +441,81 @@ const dados = await AsyncStorage.getItem(keys.funcionarios);
             await registrarBatida(tipoBatidaAtual, photo.uri);
             setTipoBatidaAtual(null);
           }
+          setIsProcessing(false); // 🔹 Finaliza processamento
         }, 800);
       } catch (e) {
         setCameraVisivel(false);
+        setIsProcessing(false);
         Alert.alert('Erro', 'Erro ao capturar foto.');
       }
     }
   };
-const registrarBatida = async (tipo: BatidaTipo, photoUri?: string) => {
-  if (!funcionarioSelecionado || !empresa || !diaAtual) return;
 
-  let fotoUrl: string | null = null;
+  // FUNÇÃO REGISTRAR BATIDA (com hora oficial, GPS e reset)
+  const registrarBatida = async (tipo: BatidaTipo, photoUriLocal?: string) => {
+    if (!funcionarioSelecionado || !empresa || !diaAtual) return;
 
-  if (photoUri) {
-    fotoUrl = await uploadFotoBatida(
-      photoUri,
-      empresa.id,
-      funcionarioSelecionado
+    // 1. Validação de localização
+    if (!empresa.latitude || !empresa.longitude) {
+      Alert.alert('Configuração pendente', 'A localização da empresa não foi definida.');
+      setIsProcessing(false);
+      return;
+    }
+
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Erro de segurança', 'A localização é obrigatória.');
+      setIsProcessing(false);
+      return;
+    }
+
+    const localizacao = await Location.getCurrentPositionAsync({});
+    const distancia = calcularDistancia(
+      localizacao.coords.latitude,
+      localizacao.coords.longitude,
+      empresa.latitude,
+      empresa.longitude
     );
-  }
 
-  const novaBatida: Batida = {
-    id: Date.now().toString(),
-    tipo: tipo,
-    timestamp: new Date().toISOString(),
-    funcionarioId: funcionarioSelecionado,
-    fotoUrl: fotoUrl
+    const raio = empresa.raioPermitido || 100;
+    if (distancia > raio) {
+      Alert.alert('Fora do perímetro', `Você está a ${Math.round(distancia)}m da empresa.`);
+      setIsProcessing(false);
+      return;
+    }
+
+    // 2. Obter hora oficial (com fallback)
+    let timestampFinal = horaLocalISO();
+    const horaOficial = await obterHoraOficial();
+    if (horaOficial) {
+      timestampFinal = horaOficial;
+    } else {
+      console.log('Usando hora do dispositivo (modo offline)');
+    }
+
+    // 3. Criar e salvar batida
+    const novaBatida: Batida = {
+      id: Date.now().toString(),
+      tipo,
+      timestamp: timestampFinal,
+      funcionarioId: funcionarioSelecionado,
+      photoUri: photoUriLocal, // Pode ser local ou indefinido
+    };
+
+    const novoDia: Dia = {
+      ...diaAtual,
+      batidas: [...diaAtual.batidas, novaBatida],
+    };
+
+    const novosDias = [novoDia, ...dias.filter(d => d.data !== diaAtual.data)];
+    await salvarDias(novosDias);
+
+    animarBotao();
+    mostrarFeedback(tipo);
+
+    // 4. Reset automático do totem
+    resetarTotem();
   };
-
-  const novoDia: Dia = {
-    ...diaAtual,
-    batidas: [...diaAtual.batidas, novaBatida],
-  };
-
-  const novosDias = [novoDia, ...dias.filter(d => d.data !== diaAtual.data)];
-  await salvarDias(novosDias);
-
-  animarBotao();
-  mostrarFeedback(tipo);
-};
-
 
   const animarBotao = () => {
     Animated.sequence([
@@ -383,7 +526,23 @@ const registrarBatida = async (tipo: BatidaTipo, photoUri?: string) => {
 
   const mostrarFeedback = (tipo: string) => {
     setMostrarFeedbacks(prev => ({ ...prev, [tipo]: true }));
-    setTimeout(() => setMostrarFeedbacks(prev => ({ ...prev, [tipo]: false })), 2000);
+    // Animação de entrada
+    Animated.timing(feedbackAnim, {
+      toValue: 1,
+      duration: 200,
+      useNativeDriver: true,
+    }).start(() => {
+      // Aguarda 1.5s e desaparece
+      setTimeout(() => {
+        Animated.timing(feedbackAnim, {
+          toValue: 0,
+          duration: 200,
+          useNativeDriver: true,
+        }).start(() => {
+          setMostrarFeedbacks(prev => ({ ...prev, [tipo]: false }));
+        });
+      }, 1500);
+    });
   };
 
   const handlePinPress = (num: string) => {
@@ -484,7 +643,7 @@ const registrarBatida = async (tipo: BatidaTipo, photoUri?: string) => {
 
         {empresa && funcionarioSelecionado && (
           <Animated.View style={{ transform: [{ scale: animacaoPonto }] }}>
-            <TouchableOpacity onPress={iniciarBaterPonto} activeOpacity={0.9}>
+            <TouchableOpacity onPress={iniciarBaterPonto} activeOpacity={0.9} disabled={isProcessing}>
               <LinearGradient colors={['#2927B4', '#12114E']} style={styles.btnPonto}>
                 <View style={styles.btnPontoContent}>
                   <Ionicons name="finger-print" size={32} color="#fff" style={styles.btnPontoIcon} />
@@ -505,19 +664,38 @@ const registrarBatida = async (tipo: BatidaTipo, photoUri?: string) => {
           keyExtractor={item => item.id}
           renderItem={({ item }) => (
             <View style={styles.batidaCard}>
-              <View style={[styles.batidaIconContainer, { backgroundColor: `${corBatida[item.tipo]}15` }]}>
-                <Ionicons name={iconeBatida[item.tipo]} size={24} color={corBatida[item.tipo]} />
-              </View>
+              {item.photoUri ? (
+                <Image source={{ uri: item.photoUri }} style={styles.batidaFoto} />
+              ) : (
+                <View style={[styles.batidaIconContainer, { backgroundColor: `${corBatida[item.tipo]}15` }]}>
+                  <Ionicons name={iconeBatida[item.tipo]} size={24} color={corBatida[item.tipo]} />
+                </View>
+              )}
               <View style={styles.batidaInfo}>
                 <Text style={styles.batidaTipo}>{rotuloBatida[item.tipo]}</Text>
                 <Text style={styles.batidaHora}>{item.timestamp.slice(11, 16)}</Text>
               </View>
-              <Ionicons name="checkmark-circle" size={20} color="#4CAF50" />
+              {/* Indicador de sincronização da foto */}
+              <Ionicons
+                name={item.photoUri?.startsWith('http') ? 'cloud-done' : 'time-outline'}
+                size={16}
+                color={item.photoUri?.startsWith('http') ? '#4CAF50' : '#999'}
+              />
             </View>
           )}
           style={{ marginTop: 10 }}
         />
       </View>
+
+      {/* Overlay de feedback de confirmação */}
+      {mostrarFeedbacks[tipoBatidaAtual!] && (
+        <Animated.View style={[styles.feedbackOverlay, { opacity: feedbackAnim }]}>
+          <View style={styles.feedbackContent}>
+            <Ionicons name="checkmark-circle" size={80} color="#4CAF50" />
+            <Text style={styles.feedbackText}>Ponto registrado!</Text>
+          </View>
+        </Animated.View>
+      )}
 
       {/* Modal PIN */}
       <Modal visible={modalPinVisivel} transparent animationType="slide">
@@ -594,7 +772,15 @@ const styles = StyleSheet.create({
   btnPontoIcon: { marginRight: 15 },
   btnPontoTitulo: { color: '#fff', fontWeight: 'bold', fontSize: 18 },
   btnPontoSubtitulo: { color: '#eee', fontSize: 13 },
-  batidaCard: { backgroundColor: '#fff', padding: 15, borderRadius: 12, flexDirection: 'row', alignItems: 'center', marginBottom: 8, elevation: 1 },
+  batidaCard: { backgroundColor: '#fff', padding: 10, borderRadius: 12, flexDirection: 'row', alignItems: 'center', marginBottom: 8, elevation: 1 },
+  batidaFoto: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    marginRight: 12,
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
   batidaIconContainer: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
   batidaInfo: { flex: 1 },
   batidaTipo: { fontWeight: '600', color: '#333' },
@@ -613,5 +799,34 @@ const styles = StyleSheet.create({
   txtFechar: { color: 'red', fontWeight: 'bold' },
   fullCamera: { flex: 1 },
   cameraOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
-  cameraText: { color: '#fff', marginTop: 15, fontWeight: 'bold' }
+  cameraText: { color: '#fff', marginTop: 15, fontWeight: 'bold' },
+  // Estilos do feedback
+  feedbackOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  feedbackContent: {
+    alignItems: 'center',
+    padding: 20,
+    borderRadius: 20,
+    backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  feedbackText: {
+    marginTop: 10,
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+  },
 });
